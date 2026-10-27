@@ -34,12 +34,18 @@ from urllib.parse import parse_qs, urlparse
 
 TOOL_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOL_DIR))  # so the sibling modules import from any working directory
+import auth  # noqa: E402
 import codegen  # noqa: E402
 import frameworks  # noqa: E402
 
 DATA_DIR = TOOL_DIR / "data"
 RUNS_DIR = DATA_DIR / "runs"
 DB_PATH = DATA_DIR / "tcm.db"
+CONFIG_PATH = DATA_DIR / "config.json"
+
+# Set by --dev-user: enables a sign-in without Google for that one address,
+# for local testing only. Off unless the server is started with the flag.
+DEV_USER = None
 
 CASE_STATUSES = ["Not Run", "Pass", "Fail", "Blocked", "Skipped"]
 PRIORITIES = ["High", "Medium", "Low"]
@@ -132,6 +138,28 @@ def init_db():
         if "target" not in have:
             conn.execute("ALTER TABLE automation_tests ADD COLUMN target TEXT")
             conn.execute("UPDATE automation_tests SET target = node_id")
+
+        # Sign-in and Jira-style projects (workspaces). Cases, automation
+        # connections and runs each belong to one workspace.
+        conn.executescript(auth.AUTH_SCHEMA)
+        for table in ("cases", "projects", "runs"):
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if "workspace_id" not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN workspace_id INTEGER")
+        orphans = sum(conn.execute(f"SELECT COUNT(*) FROM {t} WHERE workspace_id IS NULL").fetchone()[0]
+                      for t in ("cases", "projects", "runs"))
+        if orphans:
+            # Data from before workspaces existed becomes the "CFlow" project;
+            # its first visitor becomes the owner (see auth.get_workspace).
+            ws = conn.execute("SELECT id FROM workspaces WHERE key = 'CFL'").fetchone()
+            ws_id = ws[0] if ws else conn.execute(
+                """INSERT INTO workspaces (key, name, description, app_url, environments, members,
+                                           owner, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                ("CFL", "CFlow", "CFlow workflow management -- end-to-end UI regression",
+                 "https://testapp.cflowapps.com", json.dumps(["Test", "AP", "ME", "US", "EU"]), "[]",
+                 None, now(), now())).lastrowid
+            for t in ("cases", "projects", "runs"):
+                conn.execute(f"UPDATE {t} SET workspace_id = ? WHERE workspace_id IS NULL", (ws_id,))
         # A server killed mid-run leaves its run 'Running' forever.
         conn.execute(
             "UPDATE runs SET status='Aborted', finished_at=? WHERE status IN ('Running','Queued')",
@@ -323,7 +351,7 @@ class Runner:
     def busy(self):
         return self.active
 
-    def start(self, title, node_ids, headless=False, region="Test", extra=""):
+    def start(self, ws_id, title, node_ids, headless=False, region="Test", extra="", started_by=None):
         with self.lock:
             if self.active:
                 raise RuntimeError(f"Run #{self.run_id} is still in progress -- one run at a time.")
@@ -332,14 +360,17 @@ class Runner:
                 tests = rows(conn.execute(
                     f"""SELECT a.*, p.framework, p.path, p.command, p.name AS project_name
                         FROM automation_tests a JOIN projects p ON p.id = a.project_id
-                        WHERE a.present = 1 AND a.node_id IN ({marks}) ORDER BY a.project_id, a.file, a.line""",
-                    node_ids))
+                        WHERE a.present = 1 AND p.workspace_id = ? AND a.node_id IN ({marks})
+                        ORDER BY a.project_id, a.file, a.line""",
+                    [ws_id, *node_ids]))
                 if not tests:
                     raise ValueError("None of the selected tests exist any more -- re-scan the project")
-                options = {"headless": headless, "region": region, "extra": extra}
+                options = {"headless": headless, "region": region, "extra": extra, "started_by": started_by}
                 run_id = conn.execute(
-                    "INSERT INTO runs (title, targets, options, status, started_at) VALUES (?,?,?,?,?)",
-                    (title, json.dumps([t["node_id"] for t in tests]), json.dumps(options), "Running", now()),
+                    """INSERT INTO runs (workspace_id, title, targets, options, status, started_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (ws_id, title, json.dumps([t["node_id"] for t in tests]), json.dumps(options),
+                     "Running", now()),
                 ).lastrowid
                 log_path = RUNS_DIR / f"run_{run_id}.log"
                 conn.execute("UPDATE runs SET log_path=? WHERE id=?", (str(log_path), run_id))
@@ -460,10 +491,10 @@ def case_row(conn, case_id):
     return case
 
 
-def list_cases(q):
+def list_cases(q, ws_id):
     sql = """SELECT c.*, (SELECT COUNT(*) FROM links l WHERE l.case_id = c.id) AS link_count
-             FROM cases c WHERE 1=1"""
-    args = []
+             FROM cases c WHERE c.workspace_id = ?"""
+    args = [ws_id]
     if q.get("q"):
         sql += " AND (c.title LIKE ? OR c.steps LIKE ? OR c.expected LIKE ? OR ('TC-' || printf('%04d', c.id)) LIKE ?)"
         like = f"%{q['q']}%"
@@ -481,11 +512,12 @@ def list_cases(q):
         return rows(conn.execute(sql, args))
 
 
-def list_automation(q):
+def list_automation(q, ws_id):
     sql = """SELECT a.*, p.path AS root, p.name AS project, p.framework,
                     (SELECT GROUP_CONCAT(l.case_id) FROM links l WHERE l.node_id = a.node_id) AS case_ids
-             FROM automation_tests a JOIN projects p ON p.id = a.project_id WHERE a.present = 1"""
-    args = []
+             FROM automation_tests a JOIN projects p ON p.id = a.project_id
+             WHERE a.present = 1 AND p.workspace_id = ?"""
+    args = [ws_id]
     if q.get("q"):
         sql += " AND (a.node_id LIKE ? OR a.doc LIKE ? OR a.name LIKE ?)"
         args += [f"%{q['q']}%"] * 3
@@ -508,14 +540,15 @@ def list_automation(q):
         return rows(conn.execute(sql, args))
 
 
-def list_projects():
+def list_projects(ws_id):
+    """Automation connections of one workspace."""
     with db() as conn:
         out = rows(conn.execute(
             """SELECT p.*,
                       (SELECT COUNT(*) FROM automation_tests a WHERE a.project_id = p.id AND a.present = 1) AS tests,
                       (SELECT COUNT(*) FROM automation_tests a WHERE a.project_id = p.id AND a.present = 1
                          AND EXISTS (SELECT 1 FROM links l WHERE l.node_id = a.node_id)) AS linked
-               FROM projects p ORDER BY p.id"""))
+               FROM projects p WHERE p.workspace_id = ? ORDER BY p.id""", (ws_id,)))
     for p in out:
         p["label"] = frameworks.FRAMEWORKS.get(p["framework"], {}).get("label", p["framework"])
         p["default_command"] = frameworks.FRAMEWORKS.get(p["framework"], {}).get("command", "")
@@ -523,12 +556,19 @@ def list_projects():
     return out
 
 
-def save_project(project_id, data):
+def owned_project(conn, project_id, ws_id):
+    p = get_project(conn, project_id)
+    if p["workspace_id"] != ws_id:
+        raise ValueError(f"Unknown automation connection {project_id}")
+    return p
+
+
+def save_project(project_id, data, ws_id):
     name = (data.get("name") or "").strip()
     framework = data.get("framework")
     path = (data.get("path") or "").strip().strip('"')
     if not name:
-        raise ValueError("Project name is required")
+        raise ValueError("Connection name is required")
     if framework not in frameworks.FRAMEWORKS:
         raise ValueError("Pick a framework")
     if not Path(path).is_dir():
@@ -538,16 +578,18 @@ def save_project(project_id, data):
     with db() as conn:
         if project_id is None:
             project_id = conn.execute(
-                "INSERT INTO projects (name, framework, path, scan_dir, command, created_at) VALUES (?,?,?,?,?,?)",
-                (*values, now())).lastrowid
+                """INSERT INTO projects (workspace_id, name, framework, path, scan_dir, command, created_at)
+                   VALUES (?,?,?,?,?,?,?)""", (ws_id, *values, now())).lastrowid
         else:
+            owned_project(conn, project_id, ws_id)
             conn.execute("UPDATE projects SET name=?, framework=?, path=?, scan_dir=?, command=? WHERE id=?",
                          (*values, project_id))
     return {"id": project_id, "tests": scan_project(project_id)}
 
 
-def delete_project(project_id):
+def delete_project(project_id, ws_id):
     with db() as conn:
+        owned_project(conn, project_id, ws_id)
         nodes = [r[0] for r in conn.execute("SELECT node_id FROM automation_tests WHERE project_id=?", (project_id,))]
         conn.executemany("DELETE FROM links WHERE node_id=?", [(n,) for n in nodes])
         conn.execute("DELETE FROM automation_tests WHERE project_id=?", (project_id,))
@@ -555,26 +597,29 @@ def delete_project(project_id):
     return {"ok": True, "unlinked_tests": len(nodes)}
 
 
-def summary():
+def summary(ws_id):
     with db() as conn:
         by_status = {r["status"]: r["n"] for r in conn.execute(
-            "SELECT status, COUNT(*) n FROM cases GROUP BY status")}
+            "SELECT status, COUNT(*) n FROM cases WHERE workspace_id = ? GROUP BY status", (ws_id,))}
         modules = rows(conn.execute(
             """SELECT module,
                       COUNT(*) total,
                       SUM(status='Pass') pass, SUM(status='Fail') fail,
                       SUM(status IN ('Blocked','Skipped')) blocked, SUM(status='Not Run') notrun
-               FROM cases GROUP BY module ORDER BY module"""))
+               FROM cases WHERE workspace_id = ? GROUP BY module ORDER BY module""", (ws_id,)))
         auto = conn.execute(
             """SELECT COUNT(*) total,
                       SUM(EXISTS (SELECT 1 FROM links l WHERE l.node_id = a.node_id)) linked
-               FROM automation_tests a WHERE present = 1""").fetchone()
-        cases_total = conn.execute("SELECT COUNT(*) FROM cases").fetchone()[0]
+               FROM automation_tests a JOIN projects p ON p.id = a.project_id
+               WHERE a.present = 1 AND p.workspace_id = ?""", (ws_id,)).fetchone()
+        cases_total = conn.execute("SELECT COUNT(*) FROM cases WHERE workspace_id = ?", (ws_id,)).fetchone()[0]
         cases_linked = conn.execute(
-            "SELECT COUNT(DISTINCT case_id) FROM links").fetchone()[0]
-        runs = rows(conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 5"))
+            """SELECT COUNT(DISTINCT l.case_id) FROM links l JOIN cases c ON c.id = l.case_id
+               WHERE c.workspace_id = ?""", (ws_id,)).fetchone()[0]
+        runs = rows(conn.execute("SELECT * FROM runs WHERE workspace_id = ? ORDER BY id DESC LIMIT 5", (ws_id,)))
         suites = [r[0] for r in conn.execute(
-            "SELECT DISTINCT suite FROM automation_tests WHERE present=1 ORDER BY suite")]
+            """SELECT DISTINCT a.suite FROM automation_tests a JOIN projects p ON p.id = a.project_id
+               WHERE a.present = 1 AND p.workspace_id = ? ORDER BY a.suite""", (ws_id,))]
     return {
         "by_status": by_status, "modules": modules, "cases_total": cases_total,
         "cases_linked": cases_linked, "auto_total": auto["total"], "auto_linked": auto["linked"] or 0,
@@ -582,7 +627,7 @@ def summary():
         "running": RUNNER.run_id if RUNNER.busy() else None,
         "frameworks": {k: v["label"] for k, v in frameworks.FRAMEWORKS.items()},
         "framework_commands": {k: v["command"] for k, v in frameworks.FRAMEWORKS.items()},
-        "projects": [{"id": p["id"], "name": p["name"], "framework": p["framework"]} for p in list_projects()],
+        "projects": [{"id": p["id"], "name": p["name"], "framework": p["framework"]} for p in list_projects(ws_id)],
     }
 
 
@@ -590,41 +635,43 @@ EXPORT_COLUMNS = ["ID", "Title", "Module", "Priority", "Status", "Preconditions"
                   "Expected Result", "Notes", "Automation Tests", "Last Run", "Created", "Updated"]
 
 
-def export_rows():
+def cases_with_links(ws_id):
     with db() as conn:
-        cases = rows(conn.execute("SELECT * FROM cases ORDER BY module, id"))
+        cases = rows(conn.execute("SELECT * FROM cases WHERE workspace_id = ? ORDER BY module, id", (ws_id,)))
         links = {}
-        for r in conn.execute("SELECT case_id, node_id FROM links ORDER BY node_id"):
+        for r in conn.execute(
+                """SELECT l.case_id, l.node_id FROM links l JOIN cases c ON c.id = l.case_id
+                   WHERE c.workspace_id = ? ORDER BY l.node_id""", (ws_id,)):
             links.setdefault(r["case_id"], []).append(r["node_id"])
+    for c in cases:
+        c["links"] = links.get(c["id"], [])
+    return cases
+
+
+def export_rows(ws_id):
     return [[f"TC-{c['id']:04d}", c["title"], c["module"], c["priority"], c["status"],
              c["preconditions"], c["steps"], c["expected"], c["notes"],
-             "\n".join(links.get(c["id"], [])), c["last_run_at"] or "", c["created_at"], c["updated_at"]]
-            for c in cases]
+             "\n".join(c["links"]), c["last_run_at"] or "", c["created_at"], c["updated_at"]]
+            for c in cases_with_links(ws_id)]
 
 
-def export_file(fmt):
-    """(bytes, content type, filename) for all test cases."""
+def export_file(fmt, ws_id, ws_key="cflow"):
+    """(bytes, content type, filename) for all test cases of a workspace."""
     import csv
     import io
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    prefix = re.sub(r"[^0-9a-z]+", "_", ws_key.lower()) or "project"
     if fmt in codegen.FORMATS:
-        with db() as conn:
-            cases = rows(conn.execute("SELECT * FROM cases ORDER BY module, id"))
-            links = {}
-            for r in conn.execute("SELECT case_id, node_id FROM links ORDER BY node_id"):
-                links.setdefault(r["case_id"], []).append(r["node_id"])
-        for c in cases:
-            c["links"] = links.get(c["id"], [])
-        root = f"cflow_{fmt.replace('-', '_')}_{stamp}"
-        return codegen.build_zip(fmt, cases, root), "application/zip", f"{root}.zip"
-    data = export_rows()
+        root = f"{prefix}_{fmt.replace('-', '_')}_{stamp}"
+        return codegen.build_zip(fmt, cases_with_links(ws_id), root), "application/zip", f"{root}.zip"
+    data = export_rows(ws_id)
     if fmt == "csv":
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(EXPORT_COLUMNS)
         writer.writerows(data)
         # BOM so Excel opens the UTF-8 file with the right encoding.
-        return ("﻿" + buf.getvalue()).encode("utf-8"), "text/csv", f"test_cases_{stamp}.csv"
+        return ("﻿" + buf.getvalue()).encode("utf-8"), "text/csv", f"{prefix}_test_cases_{stamp}.csv"
 
     from openpyxl import Workbook  # project dependency
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -649,7 +696,7 @@ def export_file(fmt):
     wb.save(buf)
     return (buf.getvalue(),
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            f"test_cases_{stamp}.xlsx")
+            f"{prefix}_test_cases_{stamp}.xlsx")
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -704,24 +751,41 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json({"error": "forbidden: requests must come from the Test Case Manager page"}, 403)
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         parts = url.path.strip("/").split("/")[1:]
-        if parts == ["export"] and method == "GET":
-            body, ctype, name = export_file(q.get("format", "xlsx"))
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
+        self.cookie_out = None
         try:
-            result = self.dispatch(method, parts, q)
+            if parts[:1] in (["auth"], ["setup"]):
+                result = self.dispatch_auth(method, parts, q)
+            else:
+                self.user = self.current_user()
+                if parts[:1] == ["workspaces"]:
+                    result = self.dispatch_workspaces(method, parts[1:])
+                else:
+                    self.ws = self.current_workspace(q)
+                    if parts == ["export"] and method == "GET":
+                        return self.send_file(*export_file(q.get("format", "xlsx"), self.ws["id"], self.ws["key"]))
+                    result = self.dispatch(method, parts, q)
             if result is None:
                 return self.send_json({"error": "not found"}, 404)
             self.send_json(result)
+        except auth.AuthError as exc:
+            self.send_json({"error": str(exc), "auth": True}, exc.status)
         except (ValueError, RuntimeError) as exc:
             self.send_json({"error": str(exc)}, 400)
         except Exception as exc:  # surface server bugs to the UI instead of hanging
             self.send_json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    def send_file(self, body, ctype, name):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def end_headers(self):
+        if getattr(self, "cookie_out", None):
+            self.send_header("Set-Cookie", self.cookie_out)
+        super().end_headers()
 
     def do_GET(self):
         self.route("GET")
@@ -735,18 +799,183 @@ class Handler(SimpleHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
-    # -- endpoints
+    # -- sign-in
+    def session_token(self):
+        return auth.token_from_cookie(self.headers.get("Cookie"))
+
+    def current_user(self):
+        with db() as conn:
+            user = auth.session_user(conn, self.session_token())
+        if not user:
+            raise auth.AuthError("Please sign in")
+        return user
+
+    def current_workspace(self, q=None):
+        # Header from fetch(); ?ws= for plain links (file downloads). The session
+        # cookie is SameSite=Strict, so neither works from another site.
+        ws_id = self.headers.get("X-Workspace") or (q or {}).get("ws")
+        if not ws_id or not ws_id.isdigit():
+            raise auth.AuthError("Open a project first", 409)
+        with db() as conn:
+            return auth.get_workspace(conn, int(ws_id), self.user["email"])
+
+    def sign_in(self, email, name, picture):
+        with db() as conn:
+            auth.upsert_user(conn, email, name, picture)
+            self.cookie_out = auth.cookie_header(auth.create_session(conn, email))
+            return {"user": auth.session_user(conn, auth.token_from_cookie(self.cookie_out.split(";")[0]))}
+
+    def dispatch_auth(self, method, parts, q):
+        cfg = auth.load_config(CONFIG_PATH)
+        if parts == ["auth", "status"] and method == "GET":
+            with db() as conn:
+                user = auth.session_user(conn, self.session_token())
+            return {"configured": auth.is_configured(cfg), "client_id": cfg["google_client_id"],
+                    "allowed_domains": cfg["allowed_domains"], "user": user, "dev_user": DEV_USER}
+        if parts == ["setup"] and method == "POST":
+            # First-run only: once configured, change data/config.json by hand.
+            if auth.is_configured(cfg):
+                raise auth.AuthError("Sign-in is already configured", 403)
+            b = self.body()
+            client_id = (b.get("google_client_id") or "").strip()
+            if not client_id.endswith(".apps.googleusercontent.com"):
+                raise ValueError("That doesn't look like a Google OAuth Client ID "
+                                 "(it ends with .apps.googleusercontent.com)")
+            domains = auth.clean_domains(b.get("allowed_domains"))
+            if not domains:
+                raise ValueError("Enter your company email domain, e.g. cavintek.com")
+            auth.save_config(CONFIG_PATH, {"google_client_id": client_id, "allowed_domains": domains})
+            return {"ok": True}
+        if parts == ["auth", "google"] and method == "POST":
+            if not auth.is_configured(cfg):
+                raise auth.AuthError("Sign-in is not configured yet", 409)
+            email, name, picture = auth.verify_google_token(cfg, self.body().get("credential"))
+            return self.sign_in(email, name, picture)
+        if parts == ["auth", "dev"] and method == "POST":
+            if not DEV_USER:
+                raise auth.AuthError("Developer sign-in is disabled", 403)
+            return self.sign_in(DEV_USER, DEV_USER.split("@")[0] + " (dev)", "")
+        if parts == ["auth", "logout"] and method == "POST":
+            with db() as conn:
+                auth.end_session(conn, self.session_token())
+            self.cookie_out = auth.cookie_header("", clear=True)
+            return {"ok": True}
+        return None
+
+    # -- workspaces (Jira-style projects)
+    def dispatch_workspaces(self, method, rest):
+        email = self.user["email"]
+        cfg = auth.load_config(CONFIG_PATH)
+        if not rest:
+            if method == "GET":
+                with db() as conn:
+                    out = auth.user_workspaces(conn, email)
+                    for w in out:
+                        w.update(self.workspace_stats(conn, w["id"]))
+                return out
+            if method == "POST":
+                return self.create_workspace(cfg, self.body())
+        ws_id = int(rest[0])
+        if len(rest) == 1:
+            with db() as conn:
+                ws = auth.get_workspace(conn, ws_id, email)
+                if method == "GET":
+                    ws.update(self.workspace_stats(conn, ws_id))
+                    ws["connections"] = list_projects(ws_id)
+                    return ws
+                if method == "PUT":
+                    fields = auth.clean_workspace_fields(cfg, self.body(), ws["owner"])
+                    if fields["members"] != json.dumps(ws["members"]) and email != ws["owner"]:
+                        raise auth.AuthError("Only the project owner can change team members", 403)
+                    conn.execute(
+                        """UPDATE workspaces SET key=?, name=?, description=?, app_url=?, environments=?,
+                           members=?, updated_at=? WHERE id=?""",
+                        (*fields.values(), now(), ws_id))
+                    return auth.get_workspace(conn, ws_id, email)
+        return None
+
+    def workspace_stats(self, conn, ws_id):
+        by = {r[0]: r[1] for r in conn.execute(
+            "SELECT status, COUNT(*) FROM cases WHERE workspace_id=? GROUP BY status", (ws_id,))}
+        total = sum(by.values())
+        ran = by.get("Pass", 0) + by.get("Fail", 0)
+        last = conn.execute(
+            "SELECT id, title, status, started_at, passed, failed, errors, skipped FROM runs "
+            "WHERE workspace_id=? ORDER BY id DESC LIMIT 1", (ws_id,)).fetchone()
+        return {"cases_total": total, "by_status": by,
+                "pass_rate": round(100 * by.get("Pass", 0) / ran) if ran else None,
+                "last_run": dict(last) if last else None,
+                "automated": conn.execute(
+                    """SELECT COUNT(DISTINCT l.case_id) FROM links l JOIN cases c ON c.id = l.case_id
+                       WHERE c.workspace_id=?""", (ws_id,)).fetchone()[0]}
+
+    def create_workspace(self, cfg, data):
+        """Create a project from the onboarding form; optionally connect its
+        automation folder and import every test found as a linked case."""
+        email = self.user["email"]
+        fields = auth.clean_workspace_fields(cfg, data, email)
+        auto = data.get("automation") or {}
+        if auto.get("path"):   # validate before creating anything
+            if auto.get("framework") not in frameworks.FRAMEWORKS:
+                raise ValueError("Pick the automation framework")
+            if not Path(auto["path"].strip().strip('"')).is_dir():
+                raise ValueError(f"Automation folder not found: {auto['path']}")
+        with db() as conn:
+            if conn.execute("SELECT 1 FROM workspaces WHERE key=?", (fields["key"],)).fetchone():
+                raise ValueError(f"Project key {fields['key']} is already used -- pick another")
+            ws_id = conn.execute(
+                """INSERT INTO workspaces (key, name, description, app_url, environments, members,
+                                           owner, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (*fields.values(), email, now(), now())).lastrowid
+        result = {"id": ws_id, "tests": 0, "imported": 0}
+        if auto.get("path"):
+            conn_id = save_project(None, {"name": auto.get("name") or fields["name"], **auto}, ws_id)
+            result["tests"] = conn_id["tests"]
+            if auto.get("import_cases", True):
+                self.ws = {"id": ws_id}
+                result["imported"] = self.generate_cases({"project_id": conn_id["id"]})["created"]
+        return result
+
+    # -- project-scoped endpoints (self.ws is the open project)
+    def own_case(self, conn, case_id):
+        row = conn.execute("SELECT workspace_id FROM cases WHERE id=?", (case_id,)).fetchone()
+        if not row or row[0] != self.ws["id"]:
+            raise ValueError(f"Test case TC-{case_id:04d} not found in this project")
+
+    def own_node_ids(self, conn, node_ids):
+        if not node_ids:
+            return []
+        marks = ",".join("?" * len(node_ids))
+        return [r[0] for r in conn.execute(
+            f"""SELECT a.node_id FROM automation_tests a JOIN projects p ON p.id = a.project_id
+                WHERE p.workspace_id = ? AND a.node_id IN ({marks})""", [self.ws["id"], *node_ids])]
+
+    def start_run(self, title, node_ids, data):
+        return RUNNER.start(self.ws["id"], title, node_ids, bool(data.get("headless")),
+                            data.get("region") or (self.ws["environments"] or ["Test"])[0],
+                            data.get("extra") or "", self.user["email"])
+
+    def own_run(self, conn, run_id):
+        run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if not run or run["workspace_id"] != self.ws["id"]:
+            return None
+        return dict(run)
+
     def dispatch(self, method, parts, q):
         head = parts[0] if parts else ""
         rest = parts[1:]
+        ws_id = self.ws["id"]
 
         if head == "summary" and method == "GET":
-            return summary()
+            out = summary(ws_id)
+            out["workspace"] = self.ws
+            out["user"] = self.user
+            return out
 
         if head == "cases":
             if not rest:
                 if method == "GET":
-                    return list_cases(q)
+                    return list_cases(q, ws_id)
                 if method == "POST":
                     return self.save_case(None, self.body())
             if rest == ["generate"] and method == "POST":
@@ -754,6 +983,8 @@ class Handler(SimpleHTTPRequestHandler):
             if rest == ["run"] and method == "POST":
                 return self.run_cases(self.body())
             case_id = int(rest[0])
+            with db() as conn:
+                self.own_case(conn, case_id)
             if len(rest) == 1:
                 if method == "GET":
                     with db() as conn:
@@ -767,8 +998,8 @@ class Handler(SimpleHTTPRequestHandler):
                         conn.execute("DELETE FROM cases WHERE id=?", (case_id,))
                     return {"ok": True}
             if rest[1:] == ["links"] and method == "PUT":
-                node_ids = self.body().get("node_ids", [])
                 with db() as conn:
+                    node_ids = self.own_node_ids(conn, self.body().get("node_ids", []))
                     conn.execute("DELETE FROM links WHERE case_id=?", (case_id,))
                     conn.executemany("INSERT OR IGNORE INTO links (case_id, node_id) VALUES (?,?)",
                                      [(case_id, n) for n in node_ids])
@@ -776,47 +1007,49 @@ class Handler(SimpleHTTPRequestHandler):
 
         if head == "automation":
             if not rest and method == "GET":
-                return list_automation(q)
+                return list_automation(q, ws_id)
             if rest == ["sync"] and method == "POST":
-                return {"count": sync_automation()}
+                total = 0
+                for p in list_projects(ws_id):
+                    total += scan_project(p["id"])
+                return {"count": total}
 
-        if head == "projects":
+        if head == "projects":    # automation connections of this project
             if not rest:
                 if method == "GET":
-                    return list_projects()
+                    return list_projects(ws_id)
                 if method == "POST":
-                    return save_project(None, self.body())
+                    return save_project(None, self.body(), ws_id)
             project_id = int(rest[0])
             if len(rest) == 1:
                 if method == "PUT":
-                    return save_project(project_id, self.body())
+                    return save_project(project_id, self.body(), ws_id)
                 if method == "DELETE":
-                    return delete_project(project_id)
+                    return delete_project(project_id, ws_id)
             if rest[1:] == ["scan"] and method == "POST":
+                with db() as conn:
+                    owned_project(conn, project_id, ws_id)
                 return {"tests": scan_project(project_id)}
 
         if head == "runs":
             if not rest:
                 if method == "GET":
                     with db() as conn:
-                        return rows(conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 100"))
+                        return rows(conn.execute(
+                            "SELECT * FROM runs WHERE workspace_id=? ORDER BY id DESC LIMIT 100", (ws_id,)))
                 if method == "POST":
                     b = self.body()
-                    node_ids = b.get("node_ids") or []
-                    if not node_ids:
+                    if not b.get("node_ids"):
                         raise ValueError("Nothing to run")
-                    return {"run_id": RUNNER.start(b.get("title") or "Ad-hoc run", node_ids,
-                                                   bool(b.get("headless")), b.get("region") or "Test",
-                                                   b.get("extra") or "")}
+                    return {"run_id": self.start_run(b.get("title") or "Ad-hoc run", b["node_ids"], b)}
             if rest == ["suite"] and method == "POST":
                 return self.run_suite(self.body())
             run_id = int(rest[0])
-            if len(rest) == 1 and method == "GET":
-                with db() as conn:
-                    run = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
-                    if not run:
-                        return None
-                    run = dict(run)
+            with db() as conn:
+                run = self.own_run(conn, run_id)
+                if not run:
+                    return None
+                if len(rest) == 1 and method == "GET":
                     run["results"] = rows(conn.execute(
                         """SELECT r.*, a.line, a.file, p.path AS root, p.name AS project,
                                   (SELECT GROUP_CONCAT(l.case_id) FROM links l WHERE l.node_id = r.node_id) AS case_ids
@@ -825,17 +1058,15 @@ class Handler(SimpleHTTPRequestHandler):
                            WHERE r.run_id=? ORDER BY r.rowid""", (run_id,)))
                     return run
             if rest[1:] == ["log"] and method == "GET":
-                with db() as conn:
-                    run = conn.execute("SELECT log_path, status FROM runs WHERE id=?", (run_id,)).fetchone()
                 offset = int(q.get("offset", 0))
                 text = ""
-                if run and run["log_path"] and Path(run["log_path"]).exists():
+                if run["log_path"] and Path(run["log_path"]).exists():
                     with open(run["log_path"], "rb") as fh:
                         fh.seek(offset)
                         chunk = fh.read(256_000)
                     offset += len(chunk)
                     text = chunk.decode("utf-8", errors="replace")
-                return {"text": text, "offset": offset, "status": run["status"] if run else None}
+                return {"text": text, "offset": offset, "status": run["status"]}
             if rest[1:] == ["cancel"] and method == "POST":
                 return {"ok": RUNNER.cancel(run_id)}
         return None
@@ -853,6 +1084,7 @@ class Handler(SimpleHTTPRequestHandler):
                 values.setdefault("status", "Not Run")
                 values.setdefault("priority", "Medium")
                 values["created_at"] = values["updated_at"] = stamp
+                values["workspace_id"] = self.ws["id"]
                 cols = ", ".join(values)
                 cur = conn.execute(f"INSERT INTO cases ({cols}) VALUES ({', '.join('?' * len(values))})",
                                    list(values.values()))
@@ -866,22 +1098,23 @@ class Handler(SimpleHTTPRequestHandler):
                              [*values.values(), case_id])
                 if "status" in values and values["status"] != old["status"]:
                     conn.execute("INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
-                                 (case_id, None, values["status"], stamp, "manual"))
+                                 (case_id, None, values["status"], stamp, "manual: " + self.user["email"]))
             if "node_ids" in data:
+                node_ids = self.own_node_ids(conn, data["node_ids"])
                 conn.execute("DELETE FROM links WHERE case_id=?", (case_id,))
                 conn.executemany("INSERT OR IGNORE INTO links (case_id, node_id) VALUES (?,?)",
-                                 [(case_id, n) for n in data["node_ids"]])
+                                 [(case_id, n) for n in node_ids])
             return case_row(conn, case_id)
 
     def generate_cases(self, data):
-        """One case per automation test that has no linked case yet."""
-        suite = data.get("suite")
-        sql = """SELECT * FROM automation_tests a WHERE a.present = 1
+        """One case per automation test of this project that has no linked case yet."""
+        sql = """SELECT a.* FROM automation_tests a JOIN projects p ON p.id = a.project_id
+                 WHERE a.present = 1 AND p.workspace_id = ?
                  AND NOT EXISTS (SELECT 1 FROM links l WHERE l.node_id = a.node_id)"""
-        args = []
-        if suite:
+        args = [self.ws["id"]]
+        if data.get("suite"):
             sql += " AND a.suite = ?"
-            args.append(suite)
+            args.append(data["suite"])
         if data.get("project_id"):
             sql += " AND a.project_id = ?"
             args.append(int(data["project_id"]))
@@ -895,19 +1128,19 @@ class Handler(SimpleHTTPRequestHandler):
                 status = {"passed": "Pass", "failed": "Fail", "error": "Fail",
                           "skipped": "Skipped"}.get(t["last_result"], "Not Run")
                 cur = conn.execute(
-                    """INSERT INTO cases (title, module, priority, steps, status, last_run_id, last_run_at,
-                                          created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (humanize(t["name"]), t["suite"], "Medium", t["doc"], status,
+                    """INSERT INTO cases (workspace_id, title, module, priority, steps, status, last_run_id,
+                                          last_run_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (self.ws["id"], humanize(t["name"]), t["suite"], "Medium", t["doc"], status,
                      t["last_run_id"], t["last_run_at"], stamp, stamp))
                 conn.execute("INSERT INTO links (case_id, node_id) VALUES (?,?)", (cur.lastrowid, t["node_id"]))
                 created += 1
         return {"created": created}
 
     def run_suite(self, data):
-        """Run every test of a project, of one suite in it, or of all projects."""
+        """Run every test of a connection, of one suite in it, or of the whole project."""
         sql = """SELECT a.node_id FROM automation_tests a JOIN projects p ON p.id = a.project_id
-                 WHERE a.present = 1"""
-        args, parts = [], []
+                 WHERE a.present = 1 AND p.workspace_id = ?"""
+        args, parts = [self.ws["id"]], []
         if data.get("project_id"):
             sql += " AND a.project_id = ?"
             args.append(int(data["project_id"]))
@@ -917,39 +1150,36 @@ class Handler(SimpleHTTPRequestHandler):
         with db() as conn:
             node_ids = [r[0] for r in conn.execute(sql + " ORDER BY a.project_id, a.file, a.line", args)]
             if data.get("project_id"):
-                parts.append(get_project(conn, int(data["project_id"]))["name"])
+                parts.append(owned_project(conn, int(data["project_id"]), self.ws["id"])["name"])
         if not node_ids:
             raise ValueError("No automation tests found for that selection -- scan the project first")
         parts.append(data.get("suite") or "all suites")
         title = data.get("title") or ("Run all -- " + " / ".join(parts) if data.get("project_id")
-                                      else "Run all -- every project")
-        return {"run_id": RUNNER.start(title, node_ids, bool(data.get("headless")),
-                                       data.get("region") or "Test", data.get("extra") or ""),
-                "tests": len(node_ids)}
+                                      else f"Run all -- {self.ws['name']}")
+        return {"run_id": self.start_run(title, node_ids, data), "tests": len(node_ids)}
 
     def run_cases(self, data):
         """Run the automation linked to the given cases, or to every case in a module."""
         case_ids = data.get("case_ids") or []
-        if "module" in data:
-            with db() as conn:
-                case_ids = [r[0] for r in conn.execute(
-                    "SELECT id FROM cases WHERE module = ?", (data["module"] or "",))]
-            if not case_ids:
-                raise ValueError(f"Module '{data['module']}' has no test cases")
-            data.setdefault("title", f"Module -- {data['module'] or '(no module)'}")
-        if not case_ids:
-            raise ValueError("Select at least one test case")
         with db() as conn:
+            if "module" in data:
+                case_ids = [r[0] for r in conn.execute(
+                    "SELECT id FROM cases WHERE module = ? AND workspace_id = ?",
+                    (data["module"] or "", self.ws["id"]))]
+                if not case_ids:
+                    raise ValueError(f"Module '{data['module']}' has no test cases")
+                data.setdefault("title", f"Module -- {data['module'] or '(no module)'}")
+            if not case_ids:
+                raise ValueError("Select at least one test case")
             node_ids = [r[0] for r in conn.execute(
                 f"""SELECT DISTINCT l.node_id FROM links l JOIN automation_tests a ON a.node_id = l.node_id
-                    WHERE a.present = 1 AND l.case_id IN ({','.join('?' * len(case_ids))})
-                    ORDER BY a.project_id, a.file, a.line""", case_ids)]
+                    JOIN cases c ON c.id = l.case_id
+                    WHERE a.present = 1 AND c.workspace_id = ? AND l.case_id IN ({','.join('?' * len(case_ids))})
+                    ORDER BY a.project_id, a.file, a.line""", [self.ws["id"], *case_ids])]
         if not node_ids:
             raise ValueError("None of the selected cases is linked to an automation test")
         title = data.get("title") or f"{len(case_ids)} test case(s)"
-        return {"run_id": RUNNER.start(title, node_ids, bool(data.get("headless")),
-                                       data.get("region") or "Test", data.get("extra") or ""),
-                "tests": len(node_ids)}
+        return {"run_id": self.start_run(title, node_ids, data), "tests": len(node_ids)}
 
 
 class SingleInstanceServer(ThreadingHTTPServer):
@@ -974,18 +1204,27 @@ def main():
     parser.add_argument("--import-junit", metavar="XML",
                         help="record an external run's junit xml, update linked cases, and exit")
     parser.add_argument("--project", type=int, default=FIRST_PROJECT_ID,
-                        help="project id the --import-junit results belong to (default: project 1)")
+                        help="automation connection id the --import-junit results belong to (default: 1)")
+    parser.add_argument("--dev-user", metavar="EMAIL",
+                        help="LOCAL TESTING ONLY: allow signing in as EMAIL without Google")
     args = parser.parse_args()
+
+    global DEV_USER
+    if args.dev_user:
+        DEV_USER = args.dev_user.strip().lower()
+        print(f"[WARN] Developer sign-in enabled for {DEV_USER} -- anyone who can open this page "
+              "can sign in as that user. Do not use this for normal work.")
 
     init_db()
     print(f"[INFO] {sync_automation()} automation tests discovered across connected projects")
 
     if args.import_junit:
         with db() as conn:
-            get_project(conn, args.project)
+            ws_id = get_project(conn, args.project)["workspace_id"]
             run_id = conn.execute(
-                "INSERT INTO runs (title, targets, status, started_at, finished_at, junit_path) VALUES (?,?,?,?,?,?)",
-                (f"Imported {Path(args.import_junit).name}", "[]", "Imported", now(), now(),
+                """INSERT INTO runs (workspace_id, title, targets, status, started_at, finished_at, junit_path)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (ws_id, f"Imported {Path(args.import_junit).name}", "[]", "Imported", now(), now(),
                  str(Path(args.import_junit).resolve()))).lastrowid
         updated = apply_results(run_id, [args.import_junit], args.project, source="import")
         print(f"[OK] run #{run_id} imported; {updated} linked case(s) updated")

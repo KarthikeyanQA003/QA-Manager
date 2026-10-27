@@ -20,6 +20,40 @@ nav button { background: none; border: 0; padding: 8px 14px; border-radius: 6px;
 nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
 #runBadge { margin-left: auto; font-size: 13px; color: var(--muted); }
 #runSuiteBtn:disabled { opacity: .5; }
+/* sign-in / project screens */
+#gate { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; }
+#gate.hidden { display: none; }
+.gate-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 28px 32px;
+             width: min(720px, 100%); box-shadow: 0 8px 30px rgba(20,30,50,.06); }
+.gate-card.narrow { width: min(420px, 100%); text-align: center; margin-top: 8vh; }
+.gate-card h2, .gate-wide h2 { margin: 6px 0 6px; font-size: 22px; }
+.gate-wide { width: min(1100px, 100%); }
+.gate-top { display: flex; justify-content: space-between; align-items: center; }
+.brand-big { font-weight: 700; color: var(--accent); font-size: 15px; }
+.gate-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.steps { padding-left: 20px; line-height: 1.7; } .steps code, .gate-card code { background: #f0f3f8; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.google-btn { display: flex; justify-content: center; margin: 22px 0 8px; min-height: 44px; }
+.err-text { color: var(--fail); font-size: 13px; }
+.dev-login { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 13px; }
+.wz-sec { margin-top: 18px; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+.ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+.ws-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; cursor: pointer; text-align: left; font: inherit; color: var(--ink); }
+.ws-card:hover { border-color: var(--accent); box-shadow: 0 4px 14px rgba(47,111,222,.12); }
+.ws-card.new { border-style: dashed; display: flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 600; min-height: 150px; }
+.ws-card h3 { margin: 4px 0; font-size: 16px; }
+.ws-card .stats { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.ws-key { display: inline-block; background: #e8effc; color: var(--accent); font-weight: 700; font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 6px; font-family: ui-monospace, Consolas, monospace; }
+.ws-switch { border: 0; background: none; font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; padding: 6px 8px; border-radius: 6px; white-space: nowrap; color: var(--ink); }
+.ws-switch:hover { background: #f0f3f8; }
+.user-btn { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; background-size: cover; }
+.user-mini { font-size: 13px; color: var(--muted); }
+.ws-details { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; }
+.ws-details h2 { margin: 0 0 4px; font-size: 20px; }
+.ws-details dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 0; font-size: 13px; }
+.ws-details dt { color: var(--muted); }
+.ws-details dd { margin: 0; }
+.env-chip { display: inline-block; background: #eef1f6; border-radius: 10px; padding: 1px 8px; margin: 0 4px 4px 0; font-size: 12px; }
+@media (max-width: 800px) { .ws-details { grid-template-columns: 1fr; } }
 .nav-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .mod-run { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0 2px; font-size: 12px; opacity: .45; }
 .side a:hover .mod-run, .side a.on .mod-run, .mod-run:focus-visible { opacity: 1; }
@@ -104,23 +138,103 @@ a.ide:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
+<!-- Sign-in / project selection screens, shown before the app -->
+<div id="gate">
+  <!-- First run: Google sign-in not configured yet -->
+  <section class="gate-card hidden" id="screen-setup">
+    <div class="brand-big">✓ Test Case Manager</div>
+    <h2>Set up Google sign-in</h2>
+    <p class="muted">One-time setup. Create a Google OAuth Client ID, then paste it below.</p>
+    <ol class="steps">
+      <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console → Credentials</a> (sign in with your company account; create a project if asked).</li>
+      <li>If prompted, configure the <b>OAuth consent screen</b>: User type <b>Internal</b>, app name “Test Case Manager”.</li>
+      <li><b>Create credentials → OAuth client ID</b> → Application type <b>Web application</b>.</li>
+      <li>Under <b>Authorized JavaScript origins</b> add <code id="originHint">http://localhost:8765</code> — no redirect URI needed.</li>
+      <li>Create, then copy the <b>Client ID</b> (ends with <code>.apps.googleusercontent.com</code>).</li>
+    </ol>
+    <label class="f">Google OAuth Client ID *</label>
+    <input id="sClientId" class="mono" style="width:100%" placeholder="1234567890-abc.apps.googleusercontent.com">
+    <label class="f">Company email domain(s) allowed to sign in *</label>
+    <input id="sDomains" style="width:100%" placeholder="cavintek.com">
+    <div class="gate-actions"><button class="btn primary" id="saveSetup">Save &amp; continue</button></div>
+    <div class="dev-login hidden"><span class="muted">Local testing:</span> <button class="btn" data-devlogin>Developer sign-in</button></div>
+  </section>
+
+  <!-- Sign in -->
+  <section class="gate-card narrow hidden" id="screen-login">
+    <div class="brand-big">✓ Test Case Manager</div>
+    <h2>Sign in</h2>
+    <p class="muted" id="loginHint">Use your company Google account.</p>
+    <div id="googleBtn" class="google-btn"></div>
+    <p class="err-text hidden" id="loginError"></p>
+    <div class="dev-login hidden"><span class="muted">Local testing:</span> <button class="btn" data-devlogin>Developer sign-in</button></div>
+  </section>
+
+  <!-- Project picker -->
+  <section class="gate-wide hidden" id="screen-projects">
+    <div class="gate-top"><div class="brand-big">✓ Test Case Manager</div><span class="user-mini" id="pickUser"></span></div>
+    <h2>Your projects</h2>
+    <div class="ws-grid" id="wsGrid"></div>
+  </section>
+
+  <!-- Create / edit project -->
+  <section class="gate-card hidden" id="screen-wizard">
+    <div class="brand-big">✓ Test Case Manager</div>
+    <h2 id="wzTitle">Create project</h2>
+    <p class="muted" id="wzLead">Tell us about the project. You can change these later.</p>
+    <div class="wz-sec">Project</div>
+    <div class="grid2" style="grid-template-columns:2fr 1fr">
+      <div><label class="f">Project name *</label><input id="wName" style="width:100%" placeholder="e.g. CFlow Web"></div>
+      <div><label class="f">Key *</label><input id="wKey" class="mono" style="width:100%;text-transform:uppercase" maxlength="10" placeholder="CFW"></div>
+    </div>
+    <label class="f">Description *</label><textarea id="wDesc" style="min-height:60px" placeholder="What is being tested, scope, release…"></textarea>
+    <label class="f">Application URL *</label><input id="wUrl" style="width:100%" placeholder="https://testapp.example.com">
+    <label class="f">Environments / regions * <span class="muted" style="font-weight:400">— comma separated; offered in the Run dialog</span></label>
+    <input id="wEnvs" style="width:100%" placeholder="Test, AP, ME, US, EU">
+    <label class="f">Team members * <span class="muted" style="font-weight:400">— company emails, comma or one per line (you are the owner)</span></label>
+    <textarea id="wMembers" style="min-height:56px" placeholder="tester1@cavintek.com, tester2@cavintek.com"></textarea>
+    <div id="wzAuto">
+      <div class="wz-sec">Automation</div>
+      <div class="grid2" style="grid-template-columns:1fr 2fr">
+        <div><label class="f">Framework *</label><select id="wFramework" style="width:100%"></select></div>
+        <div><label class="f">Automation project folder * <span class="muted" style="font-weight:400">— VS Code: right-click folder → Copy Path</span></label>
+          <input id="wPath" class="mono" style="width:100%" placeholder="D:\Automation\my-tests"></div>
+      </div>
+      <label class="f">Scan only this sub-folder <span class="muted" style="font-weight:400">(optional)</span></label>
+      <input id="wScan" class="mono" style="width:100%" placeholder="e.g. TestCases   or   tests">
+      <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:400;color:var(--ink)">
+        <input type="checkbox" id="wImport" checked> Create a test case for every automation test found (linked, ready to run)</label>
+    </div>
+    <p class="err-text hidden" id="wzError"></p>
+    <div class="gate-actions">
+      <button class="btn" id="wzCancel">Cancel</button>
+      <button class="btn primary" id="wzSave">Create project</button>
+    </div>
+  </section>
+</div>
+
+<div id="app" class="hidden">
 <header>
-  <h1>CFlow Test Case Manager</h1>
+  <button class="ws-switch" id="wsSwitch" title="Switch project"><span class="ws-key" id="wsKey"></span><span id="wsName"></span> ▾</button>
   <nav>
-    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="dashboard" class="active">Overview</button>
     <button data-view="cases">Test Cases</button>
     <button data-view="board">Board</button>
     <button data-view="automation">Automation</button>
-    <button data-view="projects">Projects</button>
+    <button data-view="projects">Connections</button>
     <button data-view="runs">Runs</button>
   </nav>
   <span id="runBadge"></span>
   <button class="btn primary" id="runSuiteBtn" style="margin-left:12px">▶ Run suite</button>
+  <span class="menu" style="margin-left:10px"><button class="user-btn" id="userBtn"></button>
+    <span class="menu-list hidden" id="userMenu"><div class="muted" id="userEmail" style="padding:8px 12px;font-size:12px"></div>
+      <a href="#" id="menuProjects">Switch project</a><a href="#" id="menuSignOut">Sign out</a></span></span>
 </header>
 
 <main>
-  <!-- Dashboard -->
+  <!-- Overview: the project's landing page -->
   <section id="view-dashboard">
+    <div class="panel ws-details" id="wsDetails"></div>
     <div class="cards" id="cards"></div>
     <div class="panel">
       <h3 style="margin-top:0">Status by module</h3>
@@ -153,11 +267,11 @@ a.ide:hover { text-decoration: underline; }
         <button class="btn" id="importAll" title="Create one linked test case for every automation test that has none">⇪ Import all automation tests</button>
         <span class="menu"><button class="btn" id="exportBtn">⇩ Export ▾</button>
           <span class="menu-list hidden" id="exportMenu">
-            <a href="/api/export?format=xlsx">Excel (.xlsx)</a><a href="/api/export?format=csv">CSV (.csv)</a>
+            <a href="#" data-export="xlsx">Excel (.xlsx)</a><a href="#" data-export="csv">CSV (.csv)</a>
             <div class="muted" style="padding:6px 12px 2px;font-size:11px;border-top:1px solid var(--line)">AS AUTOMATION PROJECT (.zip)</div>
-            <a href="/api/export?format=pw-py">Playwright Python</a>
-            <a href="/api/export?format=pw-js">Playwright JavaScript</a>
-            <a href="/api/export?format=selenium-java">Selenium Java (TestNG)</a>
+            <a href="#" data-export="pw-py">Playwright Python</a>
+            <a href="#" data-export="pw-js">Playwright JavaScript</a>
+            <a href="#" data-export="selenium-java">Selenium Java (TestNG)</a>
           </span></span>
         <button class="btn" id="runSelectedCases" disabled>▶ Run selected (automation)</button>
         <button class="btn" id="setStatusBtn" disabled>Set status…</button>
@@ -185,7 +299,7 @@ a.ide:hover { text-decoration: underline; }
     <div class="panel">
       <div class="toolbar">
         <input id="aq" placeholder="Search test name, id or description…" class="grow">
-        <select id="aproject"><option value="">All projects</option></select>
+        <select id="aproject"><option value="">All connections</option></select>
         <select id="asuite"><option value="">All suites</option></select>
         <select id="aresult"><option value="">Any result</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="error">Error</option><option value="skipped">Skipped</option><option value="none">Never run</option></select>
         <select id="alinked"><option value="">Linked + unlinked</option><option value="no">No test case yet</option></select>
@@ -208,8 +322,8 @@ a.ide:hover { text-decoration: underline; }
   <section id="view-projects" class="hidden">
     <div class="panel">
       <div class="toolbar">
-        <span class="muted grow">Connect your existing automation projects — Playwright JS/TS, Playwright Python, pytest, Selenium Java (Maven). Their tests are found automatically, can be linked to test cases, run from here, and open in your IDE.</span>
-        <button class="btn primary" id="newProject">+ Connect project</button>
+        <span class="muted grow">Connect this project's automation code — Playwright JS/TS, Playwright Python, pytest, Selenium Java (Maven). Their tests are found automatically, can be linked to test cases, run from here, and open in your IDE.</span>
+        <button class="btn primary" id="newProject">+ Connect automation</button>
       </div>
       <table><thead><tr><th>Project</th><th>Framework</th><th>Folder</th><th>Tests</th><th>Linked</th><th>Last scan</th><th></th></tr></thead>
         <tbody id="projectRows"></tbody></table>
@@ -224,6 +338,7 @@ a.ide:hover { text-decoration: underline; }
     </div>
   </section>
 </main>
+</div><!-- /#app -->
 
 <!-- Case editor -->
 <dialog id="caseDlg">
@@ -283,7 +398,7 @@ a.ide:hover { text-decoration: underline; }
     <details style="margin-top:14px">
       <summary class="muted" style="cursor:pointer">More options</summary>
       <label class="f">Region</label>
-      <select id="rRegion"><option>Test</option><option>AP</option><option>ME</option><option>US</option><option>EU</option></select>
+      <select id="rRegion"></select>
       <label class="f">Extra args (optional)</label><input id="rExtra" placeholder="e.g. --reruns 1" style="width:100%">
     </details>
   </div>
@@ -303,7 +418,7 @@ a.ide:hover { text-decoration: underline; }
 
 <!-- Project editor -->
 <dialog id="projDlg" style="width:min(680px,96vw)">
-  <div class="dlg-head"><h2 id="projDlgTitle">Connect project</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-head"><h2 id="projDlgTitle">Connect automation</h2><button class="btn" data-close>✕</button></div>
   <div class="dlg-body">
     <label class="f">Project name *</label><input id="pName" style="width:100%" placeholder="e.g. Web regression (Playwright JS)">
     <label class="f">Framework *</label><select id="pFramework" style="width:100%"></select>
@@ -348,16 +463,24 @@ let META = { statuses: [], priorities: [], suites: [] };
 let selectedCases = new Set(), selectedAuto = new Set();
 let editing = null, editLinks = [], pendingRun = null, runPoll = null;
 
+let WS = null;        // the open project (workspace)
+let ME = null;        // the signed-in user
+
 async function api(path, opts = {}) {
   const method = opts.method || "GET";
   // Writes are always JSON -- the server refuses anything else (CSRF guard).
+  const headers = method === "GET" ? {} : { "Content-Type": "application/json" };
+  if (WS) headers["X-Workspace"] = String(WS.id);
   const res = await fetch("/api/" + path, {
-    method,
-    headers: method === "GET" ? {} : { "Content-Type": "application/json" },
+    method, headers,
     body: method === "GET" ? undefined : JSON.stringify(opts.body || {}),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("auth/")) { boot(); }
+    if (data.auth && (res.status === 403 || res.status === 404 || res.status === 409) && path !== "workspaces") { showPicker(); }
+    throw new Error(data.error || res.statusText);
+  }
   return data;
 }
 function toast(msg, err) {
@@ -387,6 +510,7 @@ const loadDashboard = guard(async () => {
   const s = await api("summary");
   META = s;
   updateBadge(s.running);
+  renderWsDetails(s);
   const st = s.by_status;
   const card = (n, l, color) => `<div class="card"><div class="n" style="color:${color || "inherit"}">${n}</div><div class="l">${l}</div></div>`;
   $("#cards").innerHTML =
@@ -424,7 +548,7 @@ function hydrateFilters() {
   const keep = $("#cmodule").value;
   fillSelect($("#cmodule"), mods); $("#cmodule").value = keep;
   const pkeep = $("#aproject").value;
-  $("#aproject").innerHTML = `<option value="">All projects</option>` +
+  $("#aproject").innerHTML = `<option value="">All connections</option>` +
     (META.projects || []).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   $("#aproject").value = pkeep;
   const bkeep = $("#bmodule").value;
@@ -680,7 +804,7 @@ const loadProjects = guard(async () => {
 });
 function openProject(p) {
   editingProject = p ? p.id : null;
-  $("#projDlgTitle").textContent = p ? `Edit — ${p.name}` : "Connect project";
+  $("#projDlgTitle").textContent = p ? `Edit — ${p.name}` : "Connect automation";
   $("#pFramework").innerHTML = Object.entries(META.frameworks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#pName").value = p?.name || ""; $("#pFramework").value = p?.framework || "playwright-js";
   $("#pPath").value = p?.path || ""; $("#pScanDir").value = p?.scan_dir || ""; $("#pCommand").value = p?.command || "";
@@ -700,7 +824,7 @@ $("#saveProject").onclick = guard(async () => {
   $("#projDlg").close(); toast(`Connected — ${r.tests} test(s) found`); loadProjects();
 });
 $("#deleteProject").onclick = guard(async () => {
-  if (!confirm("Disconnect this project? Its tests are removed from the tool and unlinked from test cases (the cases themselves are kept).")) return;
+  if (!confirm("Disconnect this automation folder? Its tests are removed from the tool and unlinked from test cases (the cases themselves are kept).")) return;
   await api("projects/" + editingProject, { method: "DELETE" });
   $("#projDlg").close(); toast("Project disconnected"); loadProjects();
 });
@@ -734,7 +858,7 @@ async function askSuiteRun(projectId = "", suite = "") {
   suiteTests = await api("automation");
   pendingRun = { suite_mode: true };
   $("#runSummary").textContent = "Run every automation test in the chosen project and suite. Linked test cases update when it finishes.";
-  $("#rProject").innerHTML = `<option value="">All projects</option>` +
+  $("#rProject").innerHTML = `<option value="">All connections</option>` +
     META.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
   $("#rProject").value = projectId || (META.projects.length === 1 ? META.projects[0].id : "");
   fillSuites(suite);
@@ -833,10 +957,211 @@ function updateBadge(runId) {
   $("#runSuiteBtn").disabled = !!runId;   // one run at a time
   $("#runSuiteBtn").title = runId ? `Run #${runId} is in progress` : "Run a whole suite, project, or everything";
 }
-setInterval(guard(async () => { const s = await api("summary"); updateBadge(s.running); }), 5000);
+setInterval(async () => {
+  if (!WS || $("#app").classList.contains("hidden")) return;
+  try { const s = await api("summary"); updateBadge(s.running); } catch { /* signed out / switched */ }
+}, 5000);
 
 function refresh() { show(currentView); }
-show("dashboard");
+
+// ===================================================================
+// Sign-in, project picker, create-project wizard, project landing page
+// ===================================================================
+const GATE_SCREENS = ["setup", "login", "projects", "wizard"];
+function showGate(screen) {
+  $("#app").classList.add("hidden");
+  $("#gate").classList.remove("hidden");
+  GATE_SCREENS.forEach(s => $("#screen-" + s).classList.toggle("hidden", s !== screen));
+  window.scrollTo(0, 0);
+}
+const initials = u => ((u?.name || u?.email || "?").replace(/\(.*?\)|@.*$/g, "").trim().split(/[\s._-]+/)
+  .filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
+
+let AUTH = null;
+async function boot() {
+  WS = null;
+  AUTH = await api("auth/status");
+  document.querySelectorAll(".dev-login").forEach(d => d.classList.toggle("hidden", !AUTH.dev_user));
+  if (AUTH.user) { ME = AUTH.user; return showPicker(); }
+  if (!AUTH.configured) {
+    $("#originHint").textContent = location.origin;
+    return showGate("setup");
+  }
+  showGate("login");
+  $("#loginHint").textContent = `Use your ${AUTH.allowed_domains.map(d => "@" + d).join(" / ")} Google account.`;
+  renderGoogleButton();
+}
+
+function renderGoogleButton() {
+  const draw = () => {
+    google.accounts.id.initialize({ client_id: AUTH.client_id, callback: onGoogleCredential, ux_mode: "popup" });
+    google.accounts.id.renderButton($("#googleBtn"), { theme: "outline", size: "large", text: "signin_with", shape: "pill", width: 280 });
+  };
+  if (window.google?.accounts?.id) return draw();
+  const s = document.createElement("script");
+  s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.onload = draw;
+  s.onerror = () => showLoginError("Could not load Google sign-in. Check the internet connection.");
+  document.head.appendChild(s);
+}
+function showLoginError(msg) { $("#loginError").textContent = msg; $("#loginError").classList.remove("hidden"); }
+async function onGoogleCredential(resp) {
+  try {
+    const r = await api("auth/google", { method: "POST", body: { credential: resp.credential } });
+    ME = r.user; $("#loginError").classList.add("hidden"); showPicker();
+  } catch (e) { showLoginError(e.message); }
+}
+document.querySelectorAll("[data-devlogin]").forEach(b => b.onclick = guard(async () => {
+  const r = await api("auth/dev", { method: "POST" }); ME = r.user; showPicker();
+}));
+$("#saveSetup").onclick = guard(async () => {
+  await api("setup", { method: "POST", body: { google_client_id: $("#sClientId").value, allowed_domains: $("#sDomains").value } });
+  toast("Google sign-in configured"); boot();
+});
+
+// ---- project picker
+async function showPicker() {
+  WS = null;
+  const list = await api("workspaces");
+  if (!list.length) return openWizard(null, true);
+  $("#pickUser").innerHTML = `${esc(ME?.email || "")} · <a href="#" id="pickSignOut">Sign out</a>`;
+  $("#pickSignOut").onclick = e => { e.preventDefault(); signOut(); };
+  $("#wsGrid").innerHTML = list.map(w => `<button class="ws-card" data-ws="${w.id}">
+      <span class="ws-key">${esc(w.key)}</span>
+      <h3>${esc(w.name)}</h3>
+      <div class="muted" style="font-size:13px;min-height:18px">${esc((w.description || "").slice(0, 110))}</div>
+      <div class="stats"><span>${w.cases_total} cases</span><span>${w.automated} automated</span>
+        <span>${w.pass_rate == null ? "not run yet" : w.pass_rate + "% pass"}</span>
+        <span>${w.owner === ME?.email ? "owner" : "member"}</span></div>
+    </button>`).join("") + `<button class="ws-card new" id="wsNew">+ Create project</button>`;
+  $("#wsGrid").querySelectorAll("[data-ws]").forEach(b => b.onclick = guard(() => openWorkspace(+b.dataset.ws)));
+  $("#wsNew").onclick = () => openWizard(null, false);
+  showGate("projects");
+}
+
+async function openWorkspace(id) {
+  WS = { id };
+  WS = await api("workspaces/" + id);
+  try { localStorage.setItem("tcm_last_ws", String(id)); } catch { /* storage blocked */ }
+  $("#wsKey").textContent = WS.key; $("#wsName").textContent = WS.name;
+  document.title = `${WS.name} — Test Case Manager`;
+  const u = $("#userBtn");
+  u.textContent = ME?.picture ? "" : initials(ME);
+  u.style.backgroundImage = ME?.picture ? `url("${ME.picture}")` : "";
+  $("#userEmail").textContent = ME?.email || "";
+  $("#rRegion").innerHTML = (WS.environments || ["Test"]).map(e => `<option>${esc(e)}</option>`).join("");
+  selectedCases = new Set(); selectedAuto = new Set();
+  ["#cmodule", "#bmodule", "#aproject", "#asuite"].forEach(s => { if ($(s)) $(s).value = ""; });
+  $("#gate").classList.add("hidden");
+  $("#app").classList.remove("hidden");
+  show("dashboard");
+}
+
+async function signOut() {
+  await api("auth/logout", { method: "POST" }).catch(() => {});
+  ME = null; WS = null; boot();
+}
+$("#wsSwitch").onclick = () => showPicker();
+$("#userBtn").onclick = e => { e.stopPropagation(); $("#userMenu").classList.toggle("hidden"); };
+document.addEventListener("click", () => $("#userMenu").classList.add("hidden"));
+$("#menuProjects").onclick = e => { e.preventDefault(); showPicker(); };
+$("#menuSignOut").onclick = e => { e.preventDefault(); signOut(); };
+document.querySelectorAll("[data-export]").forEach(a => a.onclick = e => {
+  e.preventDefault();
+  location.href = `/api/export?format=${encodeURIComponent(a.dataset.export)}&ws=${WS.id}`;
+});
+
+// ---- create / edit project
+let wizardEdit = null, frameworkList = null;
+async function openWizard(ws, first) {
+  wizardEdit = ws;
+  if (!frameworkList) {
+    frameworkList = { "cflow-pytest": "CFlow pytest (uv run, region option)", "playwright-python": "Playwright Python (pytest)",
+      "pytest": "pytest (Selenium Python / other)", "playwright-js": "Playwright JS / TS", "selenium-maven": "Selenium Java (Maven: TestNG / JUnit)" };
+  }
+  $("#wFramework").innerHTML = Object.entries(frameworkList).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#wzTitle").textContent = ws ? `Edit project — ${ws.name}` : first ? "Create your first project" : "Create project";
+  $("#wzLead").textContent = ws ? "Update the project details." : first
+    ? "Welcome! Set up a project to start managing test cases and running automation."
+    : "Tell us about the project. You can change these later.";
+  $("#wName").value = ws?.name || ""; $("#wKey").value = ws?.key || "";
+  $("#wDesc").value = ws?.description || ""; $("#wUrl").value = ws?.app_url || "";
+  $("#wEnvs").value = (ws?.environments || ["Test"]).join(", ");
+  $("#wMembers").value = (ws?.members || []).join(", ");
+  $("#wMembers").disabled = !!ws && ws.owner !== ME?.email;
+  $("#wPath").value = ""; $("#wScan").value = ""; $("#wImport").checked = true;
+  $("#wzAuto").classList.toggle("hidden", !!ws);
+  $("#wzSave").textContent = ws ? "Save changes" : "Create project";
+  $("#wzCancel").classList.toggle("hidden", !!first);
+  $("#wzError").classList.add("hidden");
+  $("#wKey").dataset.touched = ws ? "1" : "";
+  showGate("wizard");
+  $("#wName").focus();
+}
+$("#wName").oninput = () => {
+  if ($("#wKey").dataset.touched) return;
+  $("#wKey").value = $("#wName").value.split(/\s+/).filter(Boolean).map(w => w[0]).join("").replace(/[^a-z0-9]/gi, "").slice(0, 4).toUpperCase();
+};
+$("#wKey").oninput = () => { $("#wKey").dataset.touched = "1"; };
+$("#wzCancel").onclick = () => wizardEdit ? openWorkspace(wizardEdit.id) : showPicker();
+$("#wzSave").onclick = async () => {
+  const err = m => { $("#wzError").textContent = m; $("#wzError").classList.remove("hidden"); };
+  const body = { name: $("#wName").value.trim(), key: $("#wKey").value.trim(), description: $("#wDesc").value.trim(),
+                 app_url: $("#wUrl").value.trim(), environments: $("#wEnvs").value, members: $("#wMembers").value };
+  const missing = [["name", "Project name"], ["key", "Key"], ["description", "Description"], ["app_url", "Application URL"]]
+    .filter(([k]) => !body[k]).map(([, l]) => l);
+  if (!$("#wEnvs").value.trim()) missing.push("Environments");
+  if (!$("#wMembers").value.trim()) missing.push("Team members");
+  if (!wizardEdit) {
+    body.automation = { framework: $("#wFramework").value, path: $("#wPath").value.trim(),
+                        scan_dir: $("#wScan").value.trim(), import_cases: $("#wImport").checked };
+    if (!body.automation.path) missing.push("Automation project folder");
+  }
+  if (missing.length) return err("Please fill in: " + missing.join(", "));
+  $("#wzSave").disabled = true;
+  try {
+    if (wizardEdit) {
+      await api("workspaces/" + wizardEdit.id, { method: "PUT", body });
+      toast("Project updated"); openWorkspace(wizardEdit.id);
+    } else {
+      const r = await api("workspaces", { method: "POST", body });
+      toast(`Project created — ${r.tests} automation test(s) found, ${r.imported} test case(s) created`);
+      openWorkspace(r.id);
+    }
+  } catch (e) { err(e.message); } finally { $("#wzSave").disabled = false; }
+};
+
+// ---- project details on the Overview (landing page)
+function renderWsDetails(s) {
+  const w = s.workspace;
+  const conns = (META.projects || []);
+  const last = s.recent_runs?.[0];
+  $("#wsDetails").innerHTML = `
+    <div>
+      <div><span class="ws-key">${esc(w.key)}</span><span class="muted" style="font-size:12px">Project</span></div>
+      <h2>${esc(w.name)}</h2>
+      <p style="margin:4px 0 12px;white-space:pre-wrap">${esc(w.description || "No description.")}</p>
+      <div class="toolbar" style="margin:0">
+        <button class="btn primary" id="ovRunAll">▶ Run all</button>
+        <button class="btn" id="ovCases">Open test cases</button>
+        <button class="btn" id="ovEdit">Edit project</button>
+      </div>
+    </div>
+    <dl>
+      <dt>Application</dt><dd>${w.app_url ? `<a href="${esc(w.app_url)}" target="_blank" rel="noopener">${esc(w.app_url)}</a>` : "—"}</dd>
+      <dt>Environments</dt><dd>${(w.environments || []).map(e => `<span class="env-chip">${esc(e)}</span>`).join("")}</dd>
+      <dt>Owner</dt><dd>${esc(w.owner || "—")}</dd>
+      <dt>Team</dt><dd>${(w.members || []).length ? w.members.map(esc).join("<br>") : '<span class="muted">just the owner</span>'}</dd>
+      <dt>Automation</dt><dd>${conns.length ? conns.map(c => `${esc(c.name)} <span class="muted">(${esc(META.frameworks?.[c.framework] || c.framework)})</span>`).join("<br>") : '<a href="#" id="ovConnect">Connect automation</a>'}</dd>
+      <dt>Last run</dt><dd>${last ? `<a href="#" id="ovLastRun">#${last.id}</a> ${chip(last.status)} <span class="muted">${esc(last.started_at)}</span>` : '<span class="muted">none yet</span>'}</dd>
+    </dl>`;
+  $("#ovRunAll").onclick = guard(() => askSuiteRun());
+  $("#ovCases").onclick = () => show("cases");
+  $("#ovEdit").onclick = () => openWizard(w, false);
+  if ($("#ovConnect")) $("#ovConnect").onclick = e => { e.preventDefault(); show("projects"); };
+  if ($("#ovLastRun")) $("#ovLastRun").onclick = e => { e.preventDefault(); openRun(last.id); };
+}
+
+boot().catch(e => toast(e.message, true));
 </script>
 </body>
 </html>

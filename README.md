@@ -17,6 +17,54 @@ start*.
 The tool lives outside the projects it manages. It only reads their test files
 and runs their test commands in their own folders.
 
+## Sign-in and projects
+
+**Sign in with Google**, restricted to your company domain. On first start the
+app shows a setup screen:
+
+1. Open [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials).
+   Sign in with your company account and create a Cloud project if asked.
+2. If prompted, set up the **OAuth consent screen**: user type **Internal**.
+3. Click **Create credentials → OAuth client ID** and choose **Web application**.
+4. Under **Authorized JavaScript origins**, add `http://localhost:8765` (or your
+   `--port`). You don't need a redirect URI.
+5. Paste the Client ID and your email domain (e.g. `cavintek.com`) into the
+   setup screen.
+
+These settings are saved to `data/config.json`. To change them later, edit
+that file and restart the server. The sign-in rules:
+
+- The Google account must belong to the allowed domain.
+- For a company domain, the account must be a Google Workspace account
+  (`hd`). A personal Google account that uses a company address is refused.
+- The email must be verified, and the token must have been issued for this app.
+
+Sessions last 7 days and are stored in an HttpOnly, SameSite=Strict cookie.
+
+**Projects (Jira-style).** After sign-in you pick a project, or create one.
+Each project has its own test cases, board, automation connections, runs and
+dashboard. *Create project* asks for:
+
+- name and key
+- description
+- application URL
+- environments (offered in the Run dialog)
+- team members (company emails)
+- the automation framework and folder
+
+Its tests are scanned and, if you leave the box ticked, each one becomes a
+linked test case. The project's **Overview** is its landing page. It shows the
+project details, pass rate, last run, and *Run all*, *Open test cases* and
+*Edit project*.
+
+Access rules: a project is visible to its owner and its team members. Only the
+owner can change the team. Data from before sign-in existed became the
+**CFlow** project, and the first person to open it became its owner.
+
+**Local testing without Google:** `uv run server.py --dev-user you@company.com`
+adds a *Developer sign-in* button for that one address. Anyone who can open the
+page can then sign in as that user, so don't use it for normal work.
+
 - **Test Cases**: create or edit cases (title, module, priority, steps, expected
   result). Link automation tests in the editor. A case with no links is manual,
   and you set its status by hand.
