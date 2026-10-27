@@ -34,6 +34,12 @@ nav button.active { background: #e8effc; color: var(--accent); font-weight: 600;
 .steps { padding-left: 20px; line-height: 1.7; } .steps code, .gate-card code { background: #f0f3f8; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 .google-btn { display: flex; justify-content: center; margin: 22px 0 8px; min-height: 44px; }
 .err-text { color: var(--fail); font-size: 13px; }
+.auth-form { text-align: left; margin-top: 8px; }
+.auth-form input { width: 100%; padding: 10px 11px; }
+.btn.wide { width: 100%; padding: 11px; margin-top: 14px; font-weight: 600; }
+.small { font-size: 13px; }
+.or-line { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 18px 0 4px; }
+.or-line::before, .or-line::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .dev-login { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 13px; }
 .wz-sec { margin-top: 18px; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
 .ws-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
@@ -140,33 +146,39 @@ a.ide:hover { text-decoration: underline; }
 <body>
 <!-- Sign-in / project selection screens, shown before the app -->
 <div id="gate">
-  <!-- First run: Google sign-in not configured yet -->
-  <section class="gate-card hidden" id="screen-setup">
+  <!-- First run: create the admin account -->
+  <section class="gate-card narrow hidden" id="screen-setup">
     <div class="brand-big">✓ Test Case Manager</div>
-    <h2>Set up Google sign-in</h2>
-    <p class="muted">One-time setup. Create a Google OAuth Client ID, then paste it below.</p>
-    <ol class="steps">
-      <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console → Credentials</a> (sign in with your company account; create a project if asked).</li>
-      <li>If prompted, configure the <b>OAuth consent screen</b>: User type <b>Internal</b>, app name “Test Case Manager”.</li>
-      <li><b>Create credentials → OAuth client ID</b> → Application type <b>Web application</b>.</li>
-      <li>Under <b>Authorized JavaScript origins</b> add <code id="originHint">http://localhost:8765</code> — no redirect URI needed.</li>
-      <li>Create, then copy the <b>Client ID</b> (ends with <code>.apps.googleusercontent.com</code>).</li>
-    </ol>
-    <label class="f">Google OAuth Client ID *</label>
-    <input id="sClientId" class="mono" style="width:100%" placeholder="1234567890-abc.apps.googleusercontent.com">
-    <label class="f">Company email domain(s) allowed to sign in *</label>
-    <input id="sDomains" style="width:100%" placeholder="cavintek.com">
-    <div class="gate-actions"><button class="btn primary" id="saveSetup">Save &amp; continue</button></div>
+    <h2>Create your account</h2>
+    <p class="muted">Welcome! You're the first user, so you'll be the admin.</p>
+    <form class="auth-form" id="setupForm" autocomplete="on">
+      <label class="f">Your name</label><input id="sName" autocomplete="name" placeholder="Karthik">
+      <label class="f">Work email *</label><input id="sEmail" type="email" autocomplete="username" placeholder="you@cavintek.com">
+      <label class="f">Password * <span class="muted" style="font-weight:400">— at least 8 characters</span></label>
+      <input id="sPass" type="password" autocomplete="new-password">
+      <label class="f">Confirm password *</label><input id="sPass2" type="password" autocomplete="new-password">
+      <p class="muted small" id="sDomainHint">Only people with an email on your company domain will be able to register.</p>
+      <p class="err-text hidden" id="setupError"></p>
+      <button class="btn primary wide" type="submit">Create account &amp; continue</button>
+    </form>
     <div class="dev-login hidden"><span class="muted">Local testing:</span> <button class="btn" data-devlogin>Developer sign-in</button></div>
   </section>
 
-  <!-- Sign in -->
+  <!-- Sign in / register -->
   <section class="gate-card narrow hidden" id="screen-login">
     <div class="brand-big">✓ Test Case Manager</div>
-    <h2>Sign in</h2>
-    <p class="muted" id="loginHint">Use your company Google account.</p>
-    <div id="googleBtn" class="google-btn"></div>
-    <p class="err-text hidden" id="loginError"></p>
+    <h2 id="loginTitle">Sign in</h2>
+    <p class="muted" id="loginHint"></p>
+    <form class="auth-form" id="loginForm" autocomplete="on">
+      <div id="regNameRow" class="hidden"><label class="f">Your name</label><input id="lName" autocomplete="name"></div>
+      <label class="f">Work email</label><input id="lEmail" type="email" autocomplete="username">
+      <label class="f">Password</label><input id="lPass" type="password" autocomplete="current-password">
+      <div id="regConfirmRow" class="hidden"><label class="f">Confirm password</label><input id="lPass2" type="password" autocomplete="new-password"></div>
+      <p class="err-text hidden" id="loginError"></p>
+      <button class="btn primary wide" type="submit" id="loginSubmit">Sign in</button>
+    </form>
+    <p class="small" style="margin-top:14px" id="loginSwitch"></p>
+    <div id="googleWrap" class="hidden"><div class="or-line"><span>or</span></div><div id="googleBtn" class="google-btn"></div></div>
     <div class="dev-login hidden"><span class="muted">Local testing:</span> <button class="btn" data-devlogin>Developer sign-in</button></div>
   </section>
 
@@ -228,7 +240,7 @@ a.ide:hover { text-decoration: underline; }
   <button class="btn primary" id="runSuiteBtn" style="margin-left:12px">▶ Run suite</button>
   <span class="menu" style="margin-left:10px"><button class="user-btn" id="userBtn"></button>
     <span class="menu-list hidden" id="userMenu"><div class="muted" id="userEmail" style="padding:8px 12px;font-size:12px"></div>
-      <a href="#" id="menuProjects">Switch project</a><a href="#" id="menuSignOut">Sign out</a></span></span>
+      <a href="#" id="menuProjects">Switch project</a><a href="#" id="menuPassword">Change password</a><a href="#" id="menuSignOut">Sign out</a></span></span>
 </header>
 
 <main>
@@ -437,6 +449,18 @@ a.ide:hover { text-decoration: underline; }
     <button class="btn danger" id="deleteProject">Disconnect</button><span style="flex:1"></span>
     <button class="btn" data-close>Cancel</button><button class="btn primary" id="saveProject">Save &amp; scan</button>
   </div>
+</dialog>
+
+<!-- Change password -->
+<dialog id="pwDlg" style="width:min(400px,96vw)">
+  <div class="dlg-head"><h2>Change password</h2><button class="btn" data-close>✕</button></div>
+  <form class="dlg-body auth-form" id="pwForm" style="margin:0">
+    <label class="f">Current password</label><input id="pwCur" type="password" autocomplete="current-password">
+    <label class="f">New password <span class="muted" style="font-weight:400">— at least 8 characters</span></label>
+    <input id="pwNew" type="password" autocomplete="new-password">
+    <p class="err-text hidden" id="pwError"></p>
+    <button class="btn primary wide" type="submit">Change password</button>
+  </form>
 </dialog>
 
 <!-- Bulk status -->
@@ -983,18 +1007,67 @@ async function boot() {
   AUTH = await api("auth/status");
   document.querySelectorAll(".dev-login").forEach(d => d.classList.toggle("hidden", !AUTH.dev_user));
   if (AUTH.user) { ME = AUTH.user; return showPicker(); }
-  if (!AUTH.configured) {
-    $("#originHint").textContent = location.origin;
-    return showGate("setup");
+  if (AUTH.needs_setup) {
+    showGate("setup");
+    return $("#sEmail").focus();
   }
+  setLoginMode("login");
   showGate("login");
-  $("#loginHint").textContent = `Use your ${AUTH.allowed_domains.map(d => "@" + d).join(" / ")} Google account.`;
-  renderGoogleButton();
+  $("#googleWrap").classList.toggle("hidden", !AUTH.google_client_id);
+  if (AUTH.google_client_id) renderGoogleButton();
+  $("#lEmail").focus();
 }
+
+// Sign in <-> Create account on the same card.
+let loginMode = "login";
+function setLoginMode(mode) {
+  loginMode = mode;
+  const reg = mode === "register";
+  const domains = (AUTH?.allowed_domains || []).map(d => "@" + d).join(" / ");
+  $("#loginTitle").textContent = reg ? "Create account" : "Sign in";
+  $("#loginHint").textContent = reg ? `Use your ${domains} email.` : "Welcome back.";
+  $("#regNameRow").classList.toggle("hidden", !reg);
+  $("#regConfirmRow").classList.toggle("hidden", !reg);
+  $("#lPass").autocomplete = reg ? "new-password" : "current-password";
+  $("#loginSubmit").textContent = reg ? "Create account" : "Sign in";
+  $("#loginSwitch").innerHTML = reg
+    ? `Already have an account? <a href="#" id="toLogin">Sign in</a>`
+    : `New here? <a href="#" id="toRegister">Create an account</a>`;
+  $("#loginError").classList.add("hidden");
+  const link = $("#toLogin") || $("#toRegister");
+  link.onclick = e => { e.preventDefault(); setLoginMode(reg ? "login" : "register"); };
+}
+$("#loginForm").onsubmit = async e => {
+  e.preventDefault();
+  const btn = $("#loginSubmit"); btn.disabled = true;
+  try {
+    const body = { email: $("#lEmail").value, password: $("#lPass").value };
+    if (loginMode === "register") Object.assign(body, { name: $("#lName").value, confirm: $("#lPass2").value });
+    const r = await api(loginMode === "register" ? "auth/register" : "auth/login", { method: "POST", body });
+    ME = r.user; $("#lPass").value = $("#lPass2").value = "";
+    showPicker();
+  } catch (err) { showLoginError(err.message); } finally { btn.disabled = false; }
+};
+$("#setupForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const r = await api("auth/setup", { method: "POST", body: {
+      name: $("#sName").value, email: $("#sEmail").value, password: $("#sPass").value, confirm: $("#sPass2").value } });
+    ME = r.user; $("#sPass").value = $("#sPass2").value = "";
+    toast("Account created — you're the admin");
+    showPicker();
+  } catch (err) { $("#setupError").textContent = err.message; $("#setupError").classList.remove("hidden"); }
+};
+$("#sEmail").oninput = () => {
+  const d = ($("#sEmail").value.split("@")[1] || "").trim();
+  $("#sDomainHint").textContent = d.includes(".")
+    ? `Only people with an @${d} email will be able to register.`
+    : "Only people with an email on your company domain will be able to register.";
+};
 
 function renderGoogleButton() {
   const draw = () => {
-    google.accounts.id.initialize({ client_id: AUTH.client_id, callback: onGoogleCredential, ux_mode: "popup" });
+    google.accounts.id.initialize({ client_id: AUTH.google_client_id, callback: onGoogleCredential, ux_mode: "popup" });
     google.accounts.id.renderButton($("#googleBtn"), { theme: "outline", size: "large", text: "signin_with", shape: "pill", width: 280 });
   };
   if (window.google?.accounts?.id) return draw();
@@ -1013,10 +1086,6 @@ async function onGoogleCredential(resp) {
 document.querySelectorAll("[data-devlogin]").forEach(b => b.onclick = guard(async () => {
   const r = await api("auth/dev", { method: "POST" }); ME = r.user; showPicker();
 }));
-$("#saveSetup").onclick = guard(async () => {
-  await api("setup", { method: "POST", body: { google_client_id: $("#sClientId").value, allowed_domains: $("#sDomains").value } });
-  toast("Google sign-in configured"); boot();
-});
 
 // ---- project picker
 async function showPicker() {
@@ -1065,6 +1134,18 @@ $("#userBtn").onclick = e => { e.stopPropagation(); $("#userMenu").classList.tog
 document.addEventListener("click", () => $("#userMenu").classList.add("hidden"));
 $("#menuProjects").onclick = e => { e.preventDefault(); showPicker(); };
 $("#menuSignOut").onclick = e => { e.preventDefault(); signOut(); };
+$("#menuPassword").onclick = e => {
+  e.preventDefault();
+  $("#pwCur").value = $("#pwNew").value = ""; $("#pwError").classList.add("hidden");
+  $("#pwDlg").showModal();
+};
+$("#pwForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api("auth/password", { method: "POST", body: { current: $("#pwCur").value, new: $("#pwNew").value } });
+    $("#pwDlg").close(); toast("Password changed");
+  } catch (err) { $("#pwError").textContent = err.message; $("#pwError").classList.remove("hidden"); }
+};
 document.querySelectorAll("[data-export]").forEach(a => a.onclick = e => {
   e.preventDefault();
   location.href = `/api/export?format=${encodeURIComponent(a.dataset.export)}&ws=${WS.id}`;
@@ -1087,7 +1168,7 @@ async function openWizard(ws, first) {
   $("#wDesc").value = ws?.description || ""; $("#wUrl").value = ws?.app_url || "";
   $("#wEnvs").value = (ws?.environments || ["Test"]).join(", ");
   $("#wMembers").value = (ws?.members || []).join(", ");
-  $("#wMembers").disabled = !!ws && ws.owner !== ME?.email;
+  $("#wMembers").disabled = !!ws && ws.owner !== ME?.email && !ME?.is_admin;
   $("#wPath").value = ""; $("#wScan").value = ""; $("#wImport").checked = true;
   $("#wzAuto").classList.toggle("hidden", !!ws);
   $("#wzSave").textContent = ws ? "Save changes" : "Create project";

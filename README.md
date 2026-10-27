@@ -19,27 +19,29 @@ and runs their test commands in their own folders.
 
 ## Sign-in and projects
 
-**Sign in with Google**, restricted to your company domain. On first start the
-app shows a setup screen:
+**Email and password sign-in**, set up entirely in the UI:
 
-1. Open [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials).
-   Sign in with your company account and create a Cloud project if asked.
-2. If prompted, set up the **OAuth consent screen**: user type **Internal**.
-3. Click **Create credentials → OAuth client ID** and choose **Web application**.
-4. Under **Authorized JavaScript origins**, add `http://localhost:8765` (or your
-   `--port`). You don't need a redirect URI.
-5. Paste the Client ID and your email domain (e.g. `cavintek.com`) into the
-   setup screen.
+1. **First start:** a *Create your account* screen appears. The first account
+   becomes the **admin**, and its email domain (e.g. `cavintek.com`) becomes the
+   only domain allowed to register.
+2. **After that:** the *Sign in* screen has a *Create an account* link. Anyone
+   with an email on the allowed domain can register.
+3. **Change password:** use the avatar menu (top right).
 
-These settings are saved to `data/config.json`. To change them later, edit
-that file and restart the server. The sign-in rules:
+How sign-in is protected:
 
-- The Google account must belong to the allowed domain.
-- For a company domain, the account must be a Google Workspace account
-  (`hd`). A personal Google account that uses a company address is refused.
-- The email must be verified, and the token must have been issued for this app.
+- Passwords are stored only as salted PBKDF2-SHA256 hashes.
+- After 5 wrong passwords, the account is locked for 5 minutes.
+- Sessions last 7 days and are stored in an HttpOnly, SameSite=Strict cookie.
+- The allowed domains are saved in `data/config.json`. Edit that file and
+  restart the server to add another domain.
 
-Sessions last 7 days and are stored in an HttpOnly, SameSite=Strict cookie.
+**Optional Google sign-in:** add `"google_client_id": "....apps.googleusercontent.com"`
+to `data/config.json` (a Web application OAuth client, with
+`http://localhost:8765` as an authorised JavaScript origin) and restart. A
+*Sign in with Google* button then appears under the password form. Google
+accounts must be verified, on the allowed domain, and part of that domain's
+Google Workspace.
 
 **Projects (Jira-style).** After sign-in you pick a project, or create one.
 Each project has its own test cases, board, automation connections, runs and
@@ -57,13 +59,15 @@ linked test case. The project's **Overview** is its landing page. It shows the
 project details, pass rate, last run, and *Run all*, *Open test cases* and
 *Edit project*.
 
-Access rules: a project is visible to its owner and its team members. Only the
-owner can change the team. Data from before sign-in existed became the
-**CFlow** project, and the first person to open it became its owner.
+Access rules: a project is visible to its owner, its team members and admins.
+Only the owner or an admin can change the team. Data from before sign-in
+existed became the **CFlow** project, and the first person to open it becomes
+its owner.
 
-**Local testing without Google:** `uv run server.py --dev-user you@company.com`
-adds a *Developer sign-in* button for that one address. Anyone who can open the
-page can then sign in as that user, so don't use it for normal work.
+**Local testing only:** `uv run server.py --dev-user you@company.com` adds a
+*Developer sign-in* button for that one address, with no password. Anyone who
+can open the page can then sign in as that user, so don't use it for normal
+work.
 
 - **Test Cases**: create or edit cases (title, module, priority, steps, expected
   result). Link automation tests in the editor. A case with no links is manual,

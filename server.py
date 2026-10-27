@@ -142,6 +142,11 @@ def init_db():
         # Sign-in and Jira-style projects (workspaces). Cases, automation
         # connections and runs each belong to one workspace.
         conn.executescript(auth.AUTH_SCHEMA)
+        user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "password_hash" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if "is_admin" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         for table in ("cases", "projects", "runs"):
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
             if "workspace_id" not in cols:
@@ -819,9 +824,10 @@ class Handler(SimpleHTTPRequestHandler):
         with db() as conn:
             return auth.get_workspace(conn, int(ws_id), self.user["email"])
 
-    def sign_in(self, email, name, picture):
+    def sign_in(self, email, name=None, picture=None):
         with db() as conn:
-            auth.upsert_user(conn, email, name, picture)
+            if name is not None:      # Google / dev sign-in: refresh the profile
+                auth.upsert_user(conn, email, name, picture or "")
             self.cookie_out = auth.cookie_header(auth.create_session(conn, email))
             return {"user": auth.session_user(conn, auth.token_from_cookie(self.cookie_out.split(";")[0]))}
 
@@ -830,25 +836,50 @@ class Handler(SimpleHTTPRequestHandler):
         if parts == ["auth", "status"] and method == "GET":
             with db() as conn:
                 user = auth.session_user(conn, self.session_token())
-            return {"configured": auth.is_configured(cfg), "client_id": cfg["google_client_id"],
-                    "allowed_domains": cfg["allowed_domains"], "user": user, "dev_user": DEV_USER}
-        if parts == ["setup"] and method == "POST":
-            # First-run only: once configured, change data/config.json by hand.
-            if auth.is_configured(cfg):
-                raise auth.AuthError("Sign-in is already configured", 403)
+                setup = auth.needs_setup(conn)
+            return {"needs_setup": setup, "allowed_domains": cfg["allowed_domains"], "user": user,
+                    "google_client_id": cfg["google_client_id"] if auth.google_enabled(cfg) else "",
+                    "dev_user": DEV_USER}
+        if parts == ["auth", "setup"] and method == "POST":
+            # First run only: create the admin account; its email domain becomes
+            # the domain allowed to register.
             b = self.body()
-            client_id = (b.get("google_client_id") or "").strip()
-            if not client_id.endswith(".apps.googleusercontent.com"):
-                raise ValueError("That doesn't look like a Google OAuth Client ID "
-                                 "(it ends with .apps.googleusercontent.com)")
-            domains = auth.clean_domains(b.get("allowed_domains"))
-            if not domains:
-                raise ValueError("Enter your company email domain, e.g. cavintek.com")
-            auth.save_config(CONFIG_PATH, {"google_client_id": client_id, "allowed_domains": domains})
+            with db() as conn:
+                if not auth.needs_setup(conn):
+                    raise auth.AuthError("Setup is already done -- sign in instead", 403)
+                email = auth.clean_email(b.get("email"))
+                auth.clean_password(b.get("password"), b.get("confirm"))
+                domains = auth.clean_domains(b.get("allowed_domains") or auth.email_domain(email))
+                if auth.email_domain(email) not in domains:
+                    domains.insert(0, auth.email_domain(email))
+                cfg["allowed_domains"] = domains
+                auth.save_config(CONFIG_PATH, cfg)
+                auth.register(conn, cfg, b.get("name"), email, b["password"], is_admin=True)
+            return self.sign_in(email)
+        if parts == ["auth", "register"] and method == "POST":
+            b = self.body()
+            with db() as conn:
+                if auth.needs_setup(conn):
+                    raise auth.AuthError("Create the first (admin) account first", 409)
+                auth.clean_password(b.get("password"), b.get("confirm"))
+                email = auth.register(conn, cfg, b.get("name"), b.get("email"), b["password"])
+            return self.sign_in(email)
+        if parts == ["auth", "login"] and method == "POST":
+            b = self.body()
+            with db() as conn:
+                email = auth.login(conn, b.get("email"), b.get("password"))
+            return self.sign_in(email)
+        if parts == ["auth", "password"] and method == "POST":
+            b = self.body()
+            with db() as conn:
+                user = auth.session_user(conn, self.session_token())
+                if not user:
+                    raise auth.AuthError("Please sign in")
+                auth.change_password(conn, user["email"], b.get("current"), b.get("new"))
             return {"ok": True}
         if parts == ["auth", "google"] and method == "POST":
-            if not auth.is_configured(cfg):
-                raise auth.AuthError("Sign-in is not configured yet", 409)
+            if not auth.google_enabled(cfg):
+                raise auth.AuthError("Google sign-in is not enabled", 409)
             email, name, picture = auth.verify_google_token(cfg, self.body().get("credential"))
             return self.sign_in(email, name, picture)
         if parts == ["auth", "dev"] and method == "POST":
@@ -885,8 +916,9 @@ class Handler(SimpleHTTPRequestHandler):
                     return ws
                 if method == "PUT":
                     fields = auth.clean_workspace_fields(cfg, self.body(), ws["owner"])
-                    if fields["members"] != json.dumps(ws["members"]) and email != ws["owner"]:
-                        raise auth.AuthError("Only the project owner can change team members", 403)
+                    if (fields["members"] != json.dumps(ws["members"]) and email != ws["owner"]
+                            and not auth.is_admin(conn, email)):
+                        raise auth.AuthError("Only the project owner or an admin can change team members", 403)
                     conn.execute(
                         """UPDATE workspaces SET key=?, name=?, description=?, app_url=?, environments=?,
                            members=?, updated_at=? WHERE id=?""",

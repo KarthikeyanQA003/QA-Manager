@@ -1,17 +1,25 @@
 """
-Sign-in (Google), sessions, and project (workspace) access.
+Sign-in, sessions, and project (workspace) access.
 
-Google sign-in uses Google Identity Services in the page: the browser gets an
-ID token (JWT) from Google and posts it here; it is verified with Google's
-tokeninfo endpoint -- audience must be our client id, the email verified, and
-the account on an allowed domain. A session cookie is then issued.
+Default sign-in is email + password, all in the UI: the first account created
+becomes the admin and fixes the company email domain; after that anyone with an
+email on that domain can register. Passwords are stored as salted PBKDF2-SHA256
+hashes, and repeated wrong passwords lock the account for a few minutes.
+
+Optional: Google sign-in. Add a Google OAuth Client ID to data/config.json and
+a "Sign in with Google" button appears; the browser's ID token is verified with
+Google's tokeninfo endpoint (audience, issuer, expiry, verified email, domain).
 
 Config lives in data/config.json (git-ignored):
-    {"google_client_id": "....apps.googleusercontent.com", "allowed_domains": ["cavintek.com"]}
+    {"allowed_domains": ["cavintek.com"], "google_client_id": ""}
 """
 
+import hashlib
+import hmac
 import json
+import re
 import secrets
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,7 +32,8 @@ GOOGLE_ISSUERS = {"accounts.google.com", "https://accounts.google.com"}
 
 AUTH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    email TEXT PRIMARY KEY, name TEXT, picture TEXT, created_at TEXT, last_login_at TEXT
+    email TEXT PRIMARY KEY, name TEXT, picture TEXT, created_at TEXT, last_login_at TEXT,
+    password_hash TEXT, is_admin INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY, email TEXT NOT NULL, created_at TEXT, expires_at TEXT
@@ -78,7 +87,99 @@ def save_config(path, cfg):
     path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-def is_configured(cfg):
+# ---------------------------------------------------------------------------
+# Email + password accounts
+# ---------------------------------------------------------------------------
+
+PBKDF2_ITERATIONS = 240_000
+MIN_PASSWORD = 8
+MAX_FAILURES = 5
+LOCK_MINUTES = 5
+_failures = {}            # email -> (count, locked_until)
+_failures_lock = threading.Lock()
+
+
+def hash_password(password):
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), PBKDF2_ITERATIONS).hex()
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def check_password(password, stored):
+    try:
+        _, iterations, salt, digest = stored.split("$")
+    except (AttributeError, ValueError):
+        return False
+    candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations)).hex()
+    return hmac.compare_digest(candidate, digest)
+
+
+def needs_setup(conn):
+    """True until the first account with a password exists."""
+    return not conn.execute("SELECT 1 FROM users WHERE password_hash IS NOT NULL LIMIT 1").fetchone()
+
+
+def clean_email(email):
+    email = (email or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ValueError("Enter a valid email address")
+    return email
+
+
+def clean_password(password, confirm=None):
+    if len(password or "") < MIN_PASSWORD:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD} characters")
+    if confirm is not None and password != confirm:
+        raise ValueError("The two passwords don't match")
+    return password
+
+
+def register(conn, cfg, name, email, password, is_admin=False):
+    email = clean_email(email)
+    if not domain_allowed(cfg, email):
+        raise AuthError(f"Only {' / '.join('@' + d for d in cfg['allowed_domains'])} emails can register", 403)
+    row = conn.execute("SELECT password_hash FROM users WHERE email=?", (email,)).fetchone()
+    if row and row[0]:
+        raise ValueError("An account with this email already exists -- sign in instead")
+    name = (name or "").strip() or email.split("@")[0]
+    conn.execute(
+        """INSERT INTO users (email, name, picture, created_at, last_login_at, password_hash, is_admin)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(email) DO UPDATE SET name=excluded.name, password_hash=excluded.password_hash,
+             is_admin=excluded.is_admin""",
+        (email, name, "", _stamp(), _stamp(), hash_password(password), 1 if is_admin else 0))
+    return email
+
+
+def login(conn, email, password):
+    email = (email or "").strip().lower()
+    with _failures_lock:
+        count, until = _failures.get(email, (0, None))
+        if until and until > _now():
+            mins = max(1, int((until - _now()).total_seconds() // 60) + 1)
+            raise AuthError(f"Too many wrong passwords -- try again in {mins} minute(s)", 429)
+    row = conn.execute("SELECT name, password_hash FROM users WHERE email=?", (email,)).fetchone()
+    # Same message whether the email or the password is wrong.
+    if not row or not row["password_hash"] or not check_password(password or "", row["password_hash"]):
+        with _failures_lock:
+            count += 1
+            _failures[email] = (count, _now() + timedelta(minutes=LOCK_MINUTES) if count >= MAX_FAILURES else None)
+        raise AuthError("Wrong email or password")
+    with _failures_lock:
+        _failures.pop(email, None)
+    conn.execute("UPDATE users SET last_login_at=? WHERE email=?", (_stamp(), email))
+    return email
+
+
+def change_password(conn, email, current, new):
+    row = conn.execute("SELECT password_hash FROM users WHERE email=?", (email,)).fetchone()
+    if not row or not check_password(current or "", row[0] or ""):
+        raise AuthError("Current password is wrong", 403)
+    conn.execute("UPDATE users SET password_hash=? WHERE email=?", (hash_password(clean_password(new)), email))
+
+
+def google_enabled(cfg):
+    """Google sign-in is optional: on only when a Client ID is in config.json."""
     return bool(cfg.get("google_client_id")) and bool(cfg.get("allowed_domains"))
 
 
@@ -162,7 +263,7 @@ def session_user(conn, token):
     if not token:
         return None
     row = conn.execute(
-        """SELECT u.email, u.name, u.picture FROM sessions s JOIN users u ON u.email = s.email
+        """SELECT u.email, u.name, u.picture, u.is_admin FROM sessions s JOIN users u ON u.email = s.email
            WHERE s.token = ? AND s.expires_at > ?""", (token, _stamp())).fetchone()
     return dict(row) if row else None
 
@@ -197,13 +298,20 @@ def ws_row(row):
     return w
 
 
-def can_access(ws, email):
-    return ws["owner"] == email or email in ws["members"] or not ws["owner"]
+def is_admin(conn, email):
+    row = conn.execute("SELECT is_admin FROM users WHERE email = ?", (email,)).fetchone()
+    return bool(row and row[0])
+
+
+def can_access(ws, email, admin=False):
+    # Admins see every project; others see the ones they own or are a member of.
+    return admin or ws["owner"] == email or email in ws["members"] or not ws["owner"]
 
 
 def user_workspaces(conn, email):
+    admin = is_admin(conn, email)
     return [w for w in (ws_row(r) for r in conn.execute("SELECT * FROM workspaces ORDER BY name"))
-            if can_access(w, email)]
+            if can_access(w, email, admin)]
 
 
 def get_workspace(conn, ws_id, email):
@@ -211,7 +319,7 @@ def get_workspace(conn, ws_id, email):
     if not row:
         raise AuthError("Project not found", 404)
     ws = ws_row(row)
-    if not can_access(ws, email):
+    if not can_access(ws, email, is_admin(conn, email)):
         raise AuthError("You are not a member of this project", 403)
     if not ws["owner"]:
         # Projects migrated from before sign-in existed: the first person to
