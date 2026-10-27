@@ -85,7 +85,23 @@ nav button.active { background: #e8effc; color: var(--accent); font-weight: 600;
 .rd-cards .card { padding: 10px 12px; } .rd-cards .card .n { font-size: 22px; }
 tr.is-running td { background: #f2f7ff; }
 .side .sec { padding-left: 24px; font-size: 12px; }
-#repBody th, #view-execute th { position: static; }
+#repBody th, #view-execute th, #impBody th { position: static; }
+.att-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.att { position: relative; width: 132px; border: 1px solid var(--line); border-radius: 6px; background: #fff; overflow: hidden; font-size: 11px; }
+.att a.open { display: block; color: var(--ink); text-decoration: none; }
+.att img { display: block; width: 100%; height: 86px; object-fit: cover; background: #f0f2f5; }
+.att .ico { height: 86px; display: flex; align-items: center; justify-content: center; font-size: 30px; background: #f5f6f8; }
+.att .nm { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att .sub { padding: 0 6px 4px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att button.x { position: absolute; top: 3px; right: 3px; border: 0; border-radius: 50%; width: 20px; height: 20px; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; line-height: 20px; padding: 0; }
+.drop { border: 2px dashed var(--line); border-radius: 8px; padding: 12px; text-align: center; color: var(--muted); font-size: 13px; cursor: pointer; }
+.drop.over { border-color: var(--accent); background: #f2f7ff; color: var(--accent); }
+.shots a img { width: 46px; height: 32px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); margin: 2px 2px 0 0; vertical-align: middle; }
+.side-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 6px 10px; }
+.mod-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+.mod-row.sec { padding-left: 26px; font-size: 13px; }
+.mod-row .n { flex: 1; } .mod-row button { padding: 2px 8px; font-size: 12px; }
+#impBody select { max-width: 100%; }
 .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 @media (max-width: 800px) { .grid4, .grid2 { grid-template-columns: 1fr 1fr; } }
 .exec { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; align-items: start; }
@@ -303,7 +319,7 @@ a.ide:hover { text-decoration: underline; }
   <!-- Test cases -->
   <section id="view-cases" class="hidden">
    <div class="split">
-    <div class="panel side"><div class="count" style="padding:0 10px 6px">MODULES</div><div id="moduleNav"></div></div>
+    <div class="panel side"><div class="side-head"><span class="count">MODULES</span><button class="btn" id="manageMods" style="padding:2px 8px;font-size:12px" title="Add, rename or delete modules and sections">⚙ Manage</button></div><div id="moduleNav"></div></div>
     <div class="panel">
       <div class="toolbar">
         <input id="cq" placeholder="Search title, steps, TC-0001…" class="grow">
@@ -316,7 +332,8 @@ a.ide:hover { text-decoration: underline; }
       <div class="toolbar">
         <span class="count" id="caseCount"></span>
         <span class="grow"></span>
-        <button class="btn" id="importAll" title="Create one linked test case for every automation test that has none">⇪ Import all automation tests</button>
+        <button class="btn" id="importExcel" title="Import test cases from an Excel (.xlsx) or CSV file">⇪ Import Excel / CSV</button>
+        <button class="btn" id="importAll" title="Create one linked test case for every automation test that has none">⇪ Import automation tests</button>
         <span class="menu"><button class="btn" id="exportBtn">⇩ Export ▾</button>
           <span class="menu-list hidden" id="exportMenu">
             <a href="#" data-export="xlsx">Excel (.xlsx)</a><a href="#" data-export="csv">CSV (.csv)</a>
@@ -463,6 +480,32 @@ a.ide:hover { text-decoration: underline; }
   <div class="dlg-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="trCreate">Create test run</button></div>
 </dialog>
 
+<!-- Import test cases from Excel / CSV -->
+<dialog id="impDlg" style="width:min(1100px,96vw)">
+  <div class="dlg-head"><h2>Import test cases from Excel / CSV</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <div class="drop" id="impDrop">📄 Drop your Excel (.xlsx) or CSV file here, or <u>browse</u></div>
+    <input type="file" id="impFile" accept=".xlsx,.xlsm,.csv" class="hidden">
+    <p class="muted" style="font-size:12px">Each sheet is read separately; its header row and columns are detected automatically (Title / Summary, Steps, Expected Result, Priority, Module, Section, Preconditions, Test Data, Status, ID…). Check the mapping below before importing. Rows without a title continue the case above them (one step per row). A blank Module cell repeats the module above it.</p>
+    <div id="impBody"></div>
+  </div>
+  <div class="dlg-foot">
+    <span class="muted" style="margin-right:auto">If a case already exists (same External ID, or same title in the same module):
+      <label><input type="radio" name="impDup" value="skip" checked> skip it</label>
+      <label><input type="radio" name="impDup" value="update"> update it</label></span>
+    <button class="btn" data-close>Cancel</button><button class="btn primary" id="impGo" disabled>Import</button>
+  </div>
+</dialog>
+
+<!-- Manage modules and sections -->
+<dialog id="modDlg" style="width:min(720px,96vw)">
+  <div class="dlg-head"><h2>Modules and sections</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <div class="toolbar"><input id="modNew" class="grow" placeholder="New module name, e.g. Workflow Setup"><button class="btn primary" id="modAdd">+ Add module</button></div>
+    <div id="modList"></div>
+  </div>
+</dialog>
+
 <!-- Upload automation results -->
 <dialog id="upDlg" style="width:min(560px,96vw)">
   <div class="dlg-head"><h2>Upload automation results</h2><button class="btn" data-close>✕</button></div>
@@ -480,7 +523,10 @@ a.ide:hover { text-decoration: underline; }
 <dialog id="caseDlg">
   <div class="dlg-head"><h2 id="caseDlgTitle">New test case</h2><button class="btn" data-close>✕</button></div>
   <div class="dlg-body">
-    <label class="f">Title *</label><input id="fTitle" style="width:100%">
+    <div class="grid2" style="grid-template-columns:3fr 1fr">
+      <div><label class="f">Title *</label><input id="fTitle" style="width:100%"></div>
+      <div><label class="f">External ID</label><input id="fRef" style="width:100%" placeholder="e.g. WF-SET-012"></div>
+    </div>
     <div class="grid4">
       <div><label class="f">Module (suite)</label><input id="fModule" list="moduleList"><datalist id="moduleList"></datalist></div>
       <div><label class="f">Section</label><input id="fSection" list="sectionList"><datalist id="sectionList"></datalist></div>
@@ -492,6 +538,14 @@ a.ide:hover { text-decoration: underline; }
     <label class="f">Expected result</label><textarea id="fExpected" style="min-height:60px"></textarea>
     <label class="f">Test data</label><textarea id="fTestData" class="mono" style="min-height:50px" placeholder="e.g. user: qa1@company.com / region: AP / amount: 1500"></textarea>
     <label class="f">Notes</label><textarea id="fNotes" style="min-height:50px"></textarea>
+
+    <label class="f">Attachments <span class="muted" style="font-weight:400">— screenshots, logs, documents, videos (max 25 MB each)</span></label>
+    <div id="caseAttWrap">
+      <div class="drop" id="caseDrop">📎 Drop files here, <u>browse</u>, or paste a screenshot (Ctrl+V)</div>
+      <input type="file" id="caseFiles" multiple class="hidden">
+      <div class="att-grid" id="caseAtts"></div>
+    </div>
+    <p class="muted hidden" id="caseAttNew" style="font-size:12px;margin:4px 0 0">Save the test case first, then attach files.</p>
 
     <label class="f">Linked automation tests <span class="muted" style="font-weight:400">— a run of any of these updates this case</span></label>
     <div class="linked-list" id="linkedList"></div>
@@ -776,8 +830,8 @@ const loadCases = guard(async () => {
   selectedCases = new Set([...selectedCases].filter(id => list.some(c => c.id === id)));
   $("#caseRows").innerHTML = list.map(c => `<tr class="click" data-id="${c.id}">
       <td><input type="checkbox" data-sel="${c.id}" ${selectedCases.has(c.id) ? "checked" : ""}></td>
-      <td class="mono">${tcId(c.id)}</td><td>${esc(c.title)}</td><td>${esc(c.module)}${c.section ? `<br><span class="muted" style="font-size:12px">${esc(c.section)}</span>` : ""}</td><td>${esc(c.priority)}</td>
-      <td>${c.link_count ? `⚙ ${c.link_count} test${c.link_count > 1 ? "s" : ""}` : '<span class="muted">Manual</span>'}</td>
+      <td class="mono">${tcId(c.id)}${c.ref ? `<br><span class="muted" style="font-size:11px">${esc(c.ref)}</span>` : ""}</td><td>${esc(c.title)}</td><td>${esc(c.module)}${c.section ? `<br><span class="muted" style="font-size:12px">${esc(c.section)}</span>` : ""}</td><td>${esc(c.priority)}</td>
+      <td>${c.link_count ? `⚙ ${c.link_count} test${c.link_count > 1 ? "s" : ""}` : '<span class="muted">Manual</span>'}${c.attachment_count ? ` <span class="muted" title="attachments">📎 ${c.attachment_count}</span>` : ""}</td>
       <td>${chip(c.status)}</td><td class="muted">${esc(ist(c.last_run_at))}${c.last_run_id ? ` · <a href="#" data-run="${c.last_run_id}">#${c.last_run_id}</a>` : ""}</td></tr>`).join("")
     || `<tr><td colspan="8" class="muted">No matching test cases.</td></tr>`;
   document.querySelectorAll("#caseRows tr[data-id]").forEach(tr => tr.onclick = e => {
@@ -859,6 +913,9 @@ const openCase = guard(async id => {
   $("#fPre").value = c.preconditions || ""; $("#fSteps").value = c.steps || "";
   $("#fExpected").value = c.expected || ""; $("#fNotes").value = c.notes || "";
   $("#fSection").value = c.section ?? (curSection || ""); $("#fTestData").value = c.test_data || "";
+  $("#fRef").value = c.ref || "";
+  $("#caseAttWrap").classList.toggle("hidden", !id); $("#caseAttNew").classList.toggle("hidden", !!id);
+  renderAtts("#caseAtts", c.attachments || [], true, () => openCaseAtts(id));
   fillSectionList();
   editLinks = c.links.map(l => ({ ...l }));
   renderLinks();
@@ -903,7 +960,7 @@ $("#saveCase").onclick = guard(async () => {
   const body = { title: $("#fTitle").value, module: $("#fModule").value, priority: $("#fPriority").value,
                  status: $("#fStatus").value, preconditions: $("#fPre").value, steps: $("#fSteps").value,
                  expected: $("#fExpected").value, notes: $("#fNotes").value, node_ids: editLinks.map(l => l.node_id),
-                 section: $("#fSection").value, test_data: $("#fTestData").value };
+                 section: $("#fSection").value, test_data: $("#fTestData").value, ref: $("#fRef").value };
   if (!body.title.trim()) throw new Error("Title is required");
   const c = await api(editing ? "cases/" + editing : "cases", { method: editing ? "PUT" : "POST", body });
   $("#caseDlg").close(); toast(`${tcId(c.id)} saved`); refresh();
@@ -1132,13 +1189,16 @@ const openRun = guard(async id => {
     $("#rdCount").textContent = `${list.length} of ${run.results.length} test(s)`;
     $("#rdResults").innerHTML = list.map(r => {
       const cases = r.case_ids ? r.case_ids.split(",").map(c => `<a href="#" data-case="${c}">${tcId(c)}</a>`).join(" ") : "";
+      const shots = (run.attachments || []).filter(a => r.case_ids && r.case_ids.split(",").includes(String(a.case_id)))
+        .filter((a, i, all) => all.findIndex(b => b.name === a.name) === i);
       const live = r.outcome === "running";
       return `<tr class="${live ? "is-running" : ""}"><td>${cases ? `<div>${cases}</div>` : ""}<span class="mono">${esc(shortNode(r.node_id))}</span> ${ide(r.file, r.line, r.root)}</td>
         <td>${outChip(r.outcome)}</td>
         <td class="muted" style="white-space:nowrap">${esc(ist(r.started_at, false))}</td>
         <td class="muted" style="white-space:nowrap">${live || r.outcome === "queued" ? "" : esc(ist(r.finished_at, false))}</td>
         <td style="white-space:nowrap">${live ? elapsed(r.started_at) : r.duration ? r.duration.toFixed(1) + "s" : ""}</td>
-        <td class="muted" style="max-width:380px">${esc((r.message || "").split("\n")[0].slice(0, 240))}</td></tr>`;
+        <td class="muted" style="max-width:380px">${esc((r.message || "").split("\n")[0].slice(0, 240))}${shots.length ? `<div class="shots">${shots.map(a =>
+          `<a href="${attUrl(a)}" target="_blank" rel="noopener" title="${esc(a.name)}">${a.is_image ? `<img src="${attUrl(a)}" alt="">` : "📄"}</a>`).join("")}</div>` : ""}</td></tr>`;
     }).join("") || `<tr><td colspan="6" class="muted">No tests match.</td></tr>`;
     $("#rdResults").querySelectorAll("[data-case]").forEach(a => a.onclick = e => { e.preventDefault(); $("#runDetailDlg").close(); openCase(+a.dataset.case); });
   };
@@ -1363,8 +1423,13 @@ function renderExecCase(closed) {
     <div class="res-pick">${["Passed", "Failed", "Blocked", "Retest", "Skipped"].map(r =>
       `<button data-res="${r}" class="${x.result === r ? "on" : ""}" style="border-color:${RES_COLOR[r]};color:${RES_COLOR[r]};${x.result === r ? `background:${RES_COLOR[r]}` : ""}" ${closed ? "disabled" : ""}>${r}</button>`).join("")}
       ${x.result !== "Untested" && !closed ? `<button data-res="Untested" style="border-color:var(--line);color:var(--muted)">Clear</button>` : ""}</div>
+    <label class="f">Evidence for this run <span class="muted" style="font-weight:400">— screenshots, logs</span></label>
+    ${closed ? "" : `<div class="drop" id="exDrop">📎 Drop files, <u>browse</u>, or paste a screenshot (Ctrl+V)</div><input type="file" id="exFiles" multiple class="hidden">`}
+    <div class="att-grid" id="exAtts"></div>
     <p class="muted" style="font-size:12px">${x.executed_at ? `Last recorded ${esc(ist(x.executed_at))} by ${esc(x.executed_by || "")}. ` : ""}${closed ? "This run is closed — reopen it to change results." : "Choosing a result saves it and moves to the next untested case."}</p>`;
   $("#exEditCase").onclick = e => { e.preventDefault(); openCase(x.case_id); };
+  renderAtts("#exAtts", (EX.attachments || {})[x.case_id] || [], !closed, async () => { EX = await api("testruns/" + EX.id); renderExecute(); });
+  if (!closed) wireDrop("#exDrop", "#exFiles", files => uploadAtts(x.case_id, files, EX.id).then(async () => { EX = await api("testruns/" + EX.id); renderExecute(); }));
   $("#exCase").querySelectorAll("[data-res]").forEach(b => b.onclick = guard(async () => {
     const r = b.dataset.res;
     if ((r === "Failed" || r === "Blocked") && !$("#exActual").value.trim() && !$("#exComment").value.trim())
@@ -1399,6 +1464,187 @@ $("#exAdd").onclick = guard(async () => {
   if (!selectedCases.size) throw new Error("Select cases on the Test Cases tab first");
   EX = await api("testruns/" + EX.id, { method: "PUT", body: { add_case_ids: [...selectedCases] } });
   toast("Cases added"); renderExecute();
+});
+
+// ===================================================================
+// Attachments (test cases, test-run evidence, automation screenshots)
+// ===================================================================
+const attUrl = a => `/api/attachments/${a.id}?ws=${WS.id}`;
+const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+const fileIcon = n => ({ pdf: "📕", mp4: "🎬", webm: "🎬", mov: "🎬", zip: "🗜", xlsx: "📊", xls: "📊", csv: "📊", docx: "📝", doc: "📝", log: "📜", txt: "📜" })[n.split(".").pop().toLowerCase()] || "📄";
+function renderAtts(sel, list, canDelete, after) {
+  $(sel).innerHTML = list.map(a => `<div class="att">
+      <a class="open" href="${attUrl(a)}" target="_blank" rel="noopener" title="${esc(a.name)}">
+        ${a.is_image ? `<img src="${attUrl(a)}" alt="${esc(a.name)}" loading="lazy">` : `<div class="ico">${fileIcon(a.name)}</div>`}
+        <div class="nm">${esc(a.name)}</div><div class="sub">${fmtSize(a.size)} · ${esc(a.source || "")}</div></a>
+      ${canDelete ? `<button class="x" data-del="${a.id}" title="Delete">×</button>` : ""}</div>`).join("");
+  $(sel).querySelectorAll("[data-del]").forEach(b => b.onclick = guard(async e => {
+    e.preventDefault();
+    if (!confirm("Delete this attachment?")) return;
+    await api("attachments/" + b.dataset.del, { method: "DELETE" });
+    toast("Attachment deleted"); after && after();
+  }));
+}
+const fileB64 = f => new Promise((ok, bad) => {
+  const r = new FileReader();
+  r.onload = () => ok(String(r.result).split(",")[1] || ""); r.onerror = () => bad(new Error(`Could not read ${f.name}`));
+  r.readAsDataURL(f);
+});
+async function uploadAtts(caseId, files, testRunId = null) {
+  files = [...files]; if (!files.length) return;
+  if (files.some(f => f.size > 25 * 1048576)) throw new Error("Each file must be 25 MB or smaller");
+  toast(`Uploading ${files.length} file(s)…`);
+  const payload = await Promise.all(files.map(async f => ({ name: f.name, content: await fileB64(f) })));
+  await api(`cases/${caseId}/attachments`, { method: "POST", body: { files: payload, test_run_id: testRunId } });
+  toast(`${files.length} file(s) attached`);
+}
+// Click to browse, drag and drop, or paste a screenshot anywhere in the open dialog / page.
+const pasteTargets = new Map();
+function wireDrop(zoneSel, inputSel, onFiles) {
+  const zone = $(zoneSel), input = $(inputSel);
+  if (!zone) return;
+  const run = guard(onFiles);
+  zone.onclick = () => input.click();
+  input.onchange = () => { run([...input.files]); input.value = ""; };
+  zone.ondragover = e => { e.preventDefault(); zone.classList.add("over"); };
+  zone.ondragleave = () => zone.classList.remove("over");
+  zone.ondrop = e => { e.preventDefault(); zone.classList.remove("over"); run([...e.dataTransfer.files]); };
+  pasteTargets.set(zoneSel, { zone, run });
+}
+document.addEventListener("paste", e => {
+  // The drop zone of the open dialog wins; otherwise the one visible on the page.
+  const dlg = [...document.querySelectorAll("dialog")].find(d => d.open);
+  const pasteTarget = [...pasteTargets.values()].reverse().find(t => document.body.contains(t.zone) && t.zone.offsetParent &&
+    (dlg ? dlg.contains(t.zone) : true));
+  if (!pasteTarget) return;
+  const imgs = [...(e.clipboardData?.items || [])].filter(i => i.kind === "file").map(i => i.getAsFile()).filter(Boolean);
+  if (!imgs.length) return;
+  e.preventDefault();
+  const stamp = ist(new Date(Date.now() + 19800000).toISOString().slice(0, 19).replace("T", " "), false).replace(/[: ]/g, "-");
+  pasteTarget.run(imgs.map((f, i) => new File([f], `screenshot_${stamp}${i ? "_" + i : ""}.${(f.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: f.type })));
+});
+async function openCaseAtts(id) {
+  const c = await api("cases/" + id);
+  renderAtts("#caseAtts", c.attachments, true, () => openCaseAtts(id));
+}
+wireDrop("#caseDrop", "#caseFiles", async files => { await uploadAtts(editing, files); await openCaseAtts(editing); });
+$("#caseDlg").addEventListener("close", () => { if (currentView === "cases") loadCases(); });
+
+// ===================================================================
+// Import test cases from Excel / CSV
+// ===================================================================
+let IMP = null;
+$("#importExcel").onclick = () => { IMP = null; $("#impBody").innerHTML = ""; $("#impGo").disabled = true; $("#impDlg").showModal(); wireImpDrop(); };
+function wireImpDrop() {
+  const zone = $("#impDrop"), input = $("#impFile");
+  const take = guard(async f => {
+    if (!f) return;
+    if (f.size > 40 * 1048576) throw new Error("File is larger than 40 MB");
+    $("#impBody").innerHTML = '<p class="muted">Reading the file…</p>';
+    const content = await fileB64(f);
+    const pv = await api("cases/import/preview", { method: "POST", body: { name: f.name, content } });
+    IMP = { name: f.name, content, ...pv };
+    zone.innerHTML = `📄 <b>${esc(f.name)}</b> — ${pv.sheets.length} sheet(s). Drop another file to replace it.`;
+    renderImport();
+  });
+  zone.onclick = () => input.click();
+  input.onchange = () => { take(input.files[0]); input.value = ""; };
+  zone.ondragover = e => { e.preventDefault(); zone.classList.add("over"); };
+  zone.ondragleave = () => zone.classList.remove("over");
+  zone.ondrop = e => { e.preventDefault(); zone.classList.remove("over"); take(e.dataTransfer.files[0]); };
+}
+function renderImport() {
+  const fieldOpts = sel => `<option value="">— ignore —</option>` + Object.entries(IMP.fields).map(([k, l]) => `<option value="${k}" ${sel === k ? "selected" : ""}>${esc(l)}</option>`).join("");
+  $("#impBody").innerHTML = IMP.sheets.map((sh, si) => {
+    const hasModule = Object.values(sh.mapping).includes("module");
+    return `<div class="panel" style="padding:12px">
+      <div class="toolbar" style="margin-bottom:8px">
+        <label><input type="checkbox" data-isheet="${si}" ${sh.cases ? "checked" : ""}> <b>Sheet “${esc(sh.name)}”</b></label>
+        <span class="muted">${sh.rows} row(s) · ${sh.cases} test case(s) detected · header on row ${sh.header_row}</span><span class="grow"></span>
+        <label class="muted">${hasModule ? "Module when the cell is empty" : "Module"}</label>
+        <input data-imod="${si}" list="moduleList" value="${esc(sh.name)}" style="width:200px">
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr>${sh.headers.map((h, ci) => `<th style="min-width:130px"><div style="text-transform:none;color:var(--ink)">${esc(h)}</div>
+          <select data-imap="${si}:${ci}">${fieldOpts(sh.mapping[ci])}</select></th>`).join("")}</tr></thead>
+        <tbody>${sh.sample.map(r => `<tr>${sh.headers.map((h, ci) => `<td class="muted" style="font-size:12px;max-width:260px;white-space:pre-wrap">${esc((r[ci] || "").slice(0, 160))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+    </div>`;
+  }).join("");
+  $("#impBody").querySelectorAll("[data-imap]").forEach(sel => sel.onchange = () => {
+    const [si, ci] = sel.dataset.imap.split(":").map(Number), m = IMP.sheets[si].mapping;
+    if (sel.value) Object.keys(m).forEach(k => { if (m[k] === sel.value && +k !== ci) m[k] = ""; });
+    m[ci] = sel.value; renderImport();
+  });
+  $("#impBody").querySelectorAll("[data-isheet]").forEach(cb => cb.onchange = impReady);
+  impReady();
+}
+function impReady() {
+  const chosen = IMP ? IMP.sheets.filter((sh, i) => $(`[data-isheet="${i}"]`).checked) : [];
+  const ok = chosen.length && chosen.every(sh => Object.values(sh.mapping).includes("title"));
+  $("#impGo").disabled = !ok;
+  $("#impGo").title = ok ? "" : "Every chosen sheet needs a column mapped to Title";
+}
+$("#impGo").onclick = guard(async () => {
+  const sheets = IMP.sheets.map((sh, i) => ({ sh, i })).filter(({ i }) => $(`[data-isheet="${i}"]`).checked).map(({ sh, i }) => ({
+    name: sh.name, header_row: sh.header_row, module: $(`[data-imod="${i}"]`).value,
+    mapping: Object.fromEntries(Object.entries(sh.mapping).filter(([, v]) => v)) }));
+  $("#impGo").disabled = true;
+  try {
+    const r = await api("cases/import", { method: "POST", body: { name: IMP.name, content: IMP.content, sheets,
+      duplicates: document.querySelector("input[name=impDup]:checked").value } });
+    $("#impDlg").close();
+    toast(`Imported: ${r.created} new, ${r.updated} updated, ${r.skipped} skipped (of ${r.total})`);
+    $("#cmodule").value = ""; curSection = null; show("cases");
+  } finally { $("#impGo").disabled = false; }
+});
+
+// ===================================================================
+// Manage modules and sections
+// ===================================================================
+$("#manageMods").onclick = guard(async () => { $("#modNew").value = ""; await renderMods(); $("#modDlg").showModal(); });
+async function renderMods() {
+  await refreshMeta();
+  const secs = META.sections || [];
+  $("#modList").innerHTML = META.modules.map(m => `<div class="mod-row"><b class="n">${esc(m.module || "(no module)")}</b><span class="muted">${m.total} case(s)</span>
+        <button class="btn" data-addsec="${esc(m.module)}">+ Section</button><button class="btn" data-ren="${esc(m.module)}">Rename</button><button class="btn danger" data-delmod="${esc(m.module)}">Delete</button></div>` +
+      secs.filter(x => x.module === m.module && x.section).map(x => `<div class="mod-row sec"><span class="n">${esc(x.section)}</span><span class="muted">${x.total}</span>
+        <button class="btn" data-rensec="${esc(x.section)}" data-m="${esc(m.module)}">Rename</button><button class="btn danger" data-delsec="${esc(x.section)}" data-m="${esc(m.module)}">Delete</button></div>`).join("")).join("")
+    || '<p class="muted">No modules yet.</p>';
+  const L = $("#modList"), done = async msg => { toast(msg); await renderMods(); if (currentView === "cases") loadCases(); };
+  L.querySelectorAll("[data-addsec]").forEach(b => b.onclick = guard(async () => {
+    const name = prompt(`New section in "${b.dataset.addsec}":`); if (!name || !name.trim()) return;
+    await api("modules", { method: "POST", body: { module: b.dataset.addsec, name } }); done("Section added");
+  }));
+  L.querySelectorAll("[data-ren]").forEach(b => b.onclick = guard(async () => {
+    const name = prompt("Rename module to:", b.dataset.ren); if (!name || !name.trim() || name === b.dataset.ren) return;
+    await api("modules", { method: "PUT", body: { module: b.dataset.ren, name } }); done("Module renamed — its test cases moved with it");
+  }));
+  L.querySelectorAll("[data-rensec]").forEach(b => b.onclick = guard(async () => {
+    const name = prompt("Rename section to:", b.dataset.rensec); if (!name || !name.trim() || name === b.dataset.rensec) return;
+    await api("modules", { method: "PUT", body: { module: b.dataset.m, section: b.dataset.rensec, name } }); done("Section renamed");
+  }));
+  const del = async (body, label, n, choices) => {
+    if (n) {
+      const to = prompt(`${label} has ${n} test case(s). Type where to move them:\n${choices}`, "");
+      if (to === null) return;
+      body.move_to = to.trim();
+    } else if (!confirm(`Delete ${label}?`)) return;
+    await api("modules", { method: "DELETE", body }); done(`${label} deleted`);
+  };
+  L.querySelectorAll("[data-delmod]").forEach(b => b.onclick = guard(async () => {
+    const m = META.modules.find(x => x.module === b.dataset.delmod);
+    await del({ module: b.dataset.delmod }, `Module "${b.dataset.delmod}"`, m.total,
+      "Other modules: " + META.modules.map(x => x.module).filter(x => x !== b.dataset.delmod).join(", "));
+  }));
+  L.querySelectorAll("[data-delsec]").forEach(b => b.onclick = guard(async () => {
+    const x = secs.find(k => k.module === b.dataset.m && k.section === b.dataset.delsec);
+    await del({ module: b.dataset.m, section: b.dataset.delsec }, `Section "${b.dataset.delsec}"`, x.total,
+      "(leave empty for no section) Other sections: " + secs.filter(k => k.module === b.dataset.m && k.section && k.section !== b.dataset.delsec).map(k => k.section).join(", "));
+  }));
+}
+$("#modAdd").onclick = guard(async () => {
+  const name = $("#modNew").value.trim(); if (!name) throw new Error("Enter a module name");
+  await api("modules", { method: "POST", body: { name } }); $("#modNew").value = ""; toast(`Module "${name}" added`);
+  await renderMods(); if (currentView === "cases") loadCases();
 });
 
 // ===================================================================

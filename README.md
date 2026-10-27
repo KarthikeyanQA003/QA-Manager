@@ -122,6 +122,33 @@ Data is stored in `data/` (SQLite and run logs), which is git-ignored. Back up
   one to filter. Cases imported from automation start in a section named after
   their test class.
 - **Statuses:** Not Run, Running, Pass, Fail, Blocked, **Retest**, Skipped.
+- **Import from Excel / CSV** (Test Cases tab → *⇪ Import Excel / CSV*):
+  - Drop an `.xlsx` or `.csv` file. Every sheet is read, and each sheet's
+    header row and columns are detected for you: Title / Summary / Scenario,
+    Steps, Expected Result, Priority / Severity, Module, Section / Sub Module,
+    Preconditions, Test Data, Status, and the ID column.
+  - Check or change the mapping, then import.
+  - Rows without a title add their steps to the case above. A blank (merged)
+    Module cell repeats the module above it.
+  - A sheet with no Module column imports into a module named after the sheet.
+  - Priority values like P1/Critical become High, and statuses like
+    Passed/Failed/N/A are mapped.
+  - Existing cases (same External ID in the same module, or the same title in
+    the same module) are skipped or updated, whichever you choose.
+- **Manage modules** (*⚙ Manage* in the sidebar): add modules and sections.
+  Renaming one moves its cases with it. A module or section that still has
+  cases can only be deleted after you choose where to move them.
+- **Attachments**:
+  - On a test case: drop files, browse, or paste a screenshot with **Ctrl+V**.
+    You can attach images, PDF, logs and text, Office files, zip and video, up
+    to 25 MB each. Images show as thumbnails, and clicking one opens it.
+  - On a test-run case: files you attach are stored as that run's evidence and
+    also appear on the case.
+  - **Automation failure screenshots attach themselves.** When a test fails
+    and its output prints `Screenshot saved: <path>.png` (as CFlow does), the
+    screenshot is copied onto the linked test cases. It also shows next to the
+    result in the run window.
+  - Files are stored in `data/attachments/`.
 - **Test Runs tab (manual execution):**
   1. Click *+ New test run*. Give it a name, a release / milestone, an
      environment and a description.

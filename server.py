@@ -39,11 +39,15 @@ import codegen  # noqa: E402
 import frameworks  # noqa: E402
 import report  # noqa: E402
 import testruns  # noqa: E402
+import attachments  # noqa: E402
+import importer  # noqa: E402
 
 DATA_DIR = TOOL_DIR / "data"
 RUNS_DIR = DATA_DIR / "runs"
 DB_PATH = DATA_DIR / "tcm.db"
 CONFIG_PATH = DATA_DIR / "config.json"
+ATTACH_DIR = DATA_DIR / "attachments"
+MAX_BODY = 60 * 1024 * 1024   # JSON body: an Excel file or a few screenshots, base64
 
 # Set by --dev-user: enables a sign-in without Google for that one address,
 # for local testing only. Off unless the server is started with the flag.
@@ -158,7 +162,13 @@ def init_db():
         if "is_admin" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
         conn.executescript(testruns.SCHEMA)
+        conn.executescript(attachments.SCHEMA)
+        conn.execute("""CREATE TABLE IF NOT EXISTS modules (
+                            workspace_id INTEGER, module TEXT, section TEXT DEFAULT '', created_at TEXT,
+                            PRIMARY KEY (workspace_id, module, section))""")
         case_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cases)")}
+        if "ref" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN ref TEXT DEFAULT ''")
         if "test_data" not in case_cols:
             conn.execute("ALTER TABLE cases ADD COLUMN test_data TEXT DEFAULT ''")
         if "section" not in case_cols:
@@ -560,7 +570,7 @@ class Runner:
         log.flush()
 
         live_file = RUNS_DIR / f"run_{run_id}_p{project_id}.live.jsonl"
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", FORCE_COLOR="0",
+        env = dict(project_env(), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", FORCE_COLOR="0",
                    **frameworks.run_env(framework, junit, live_file))
         # CREATE_NO_WINDOW: never pop a console window for the run (output goes
         # to the run log). GUI windows -- the browser in headed mode -- still show.
@@ -570,7 +580,7 @@ class Runner:
         # user-editable template.
         self.proc = subprocess.Popen(cmd, shell=True, cwd=p["path"], stdout=log, stderr=subprocess.STDOUT,
                                      creationflags=flags, env=env)
-        feed = LiveFeed(run_id, project_id, framework, live_file, Path(log.name))
+        feed = LiveFeed(run_id, project_id, framework, live_file, Path(log.name), p["path"])
         while True:
             try:
                 code = self.proc.wait(timeout=1)
@@ -639,13 +649,33 @@ def live_progress(ws_id):
             "skipped": counts.get("skipped", 0), "now_running": now_running}
 
 
+def project_env():
+    """The environment a project's tests run in: this tool's own virtualenv
+    (when started with `uv run`) removed, so `python` / `pytest` in the run
+    command are the project's, not the tool's."""
+    env = dict(os.environ)
+    if sys.prefix != sys.base_prefix:
+        venv = os.path.normcase(os.path.abspath(sys.prefix))
+        env.pop("VIRTUAL_ENV", None)
+        env["PATH"] = os.pathsep.join(
+            p for p in env.get("PATH", "").split(os.pathsep)
+            if p and not os.path.normcase(os.path.abspath(p)).startswith(venv))
+    return env
+
+
 class LiveFeed:
     """Follows a running project's live output and records each test as it
     starts and finishes: the pytest plugin's JSON lines, or -- for Playwright
     JS -- the list reporter's result lines in the run log."""
 
-    def __init__(self, run_id, project_id, framework, live_file, log_path):
+    # "Screenshot saved: Reports\Screenshots\fail_x.png" (CFlow), "screenshot: x.png", ...
+    SHOT = re.compile(r"(?i)screenshot(?: saved)?(?: at| to)?\s*[:=]\s*['\"]?(.+?\.(?:png|jpe?g|webp))['\"]?\s*$")
+    NODE_LINE = re.compile(r"^(?:\[gw\d+\]\s+(?:\[\s*\d+%\]\s+)?\w+\s+)?(\S+\.py::\S+)")
+
+    def __init__(self, run_id, project_id, framework, live_file, log_path, project_path=""):
         self.run_id, self.framework = run_id, framework
+        self.root = Path(project_path or ".")
+        self.current, self.shots, self.failed, self.attached = None, {}, set(), set()
         self.live_file, self.log_path = Path(live_file), Path(log_path)
         self.live_pos = self.log_pos = 0
         self.log_rest = ""
@@ -677,7 +707,11 @@ class LiveFeed:
                     if node:
                         events.append((node, e["event"], e.get("outcome"), e.get("duration") or 0,
                                        e.get("message") or "", e.get("t")))
-            if self.framework == "playwright-js" and self.log_path.exists():
+                        if e["event"] == "start":
+                            self.current = node
+                        if e.get("outcome") in ("failed", "error"):
+                            self.failed.add(node)
+            if self.log_path.exists():
                 with open(self.log_path, "rb") as fh:
                     fh.seek(self.log_pos)
                     chunk = fh.read()
@@ -686,13 +720,37 @@ class LiveFeed:
                 lines = text.split("\n")
                 self.log_rest = lines.pop()
                 for line in lines:
-                    hit = frameworks.parse_live_line(self.framework, line.rstrip("\r"))
+                    line = line.rstrip("\r")
+                    hit = frameworks.parse_live_line(self.framework, line)
                     if hit and hit[0] in self.by_junit:
                         events.append((self.by_junit[hit[0]], "result", hit[1], 0, "", time.time()))
+                        if hit[1] == "failed":
+                            self.failed.add(self.by_junit[hit[0]])
+                    m = self.NODE_LINE.match(line)
+                    if m and self.node_for(m.group(1)):
+                        self.current = self.node_for(m.group(1))
+                    shot = self.SHOT.search(line)
+                    if shot and self.current:
+                        self.shots.setdefault(self.current, []).append(shot.group(1).strip())
             if events:
                 apply_live(self.run_id, events)
+            self.attach_failure_shots()
         except (OSError, sqlite3.Error) as exc:
             print(f"[RUN {self.run_id}] live update skipped: {exc}")
+
+    def attach_failure_shots(self):
+        """Copy the screenshots a failed test saved onto its linked test cases."""
+        todo = [(n, s) for n in self.failed for s in self.shots.get(n, []) if (n, s) not in self.attached]
+        if not todo:
+            return
+        with db() as conn:
+            ws_id = conn.execute("SELECT workspace_id FROM runs WHERE id=?", (self.run_id,)).fetchone()[0]
+            for node, shot in todo:
+                self.attached.add((node, shot))
+                path = Path(shot) if Path(shot).is_absolute() else self.root / shot
+                for r in conn.execute("SELECT case_id FROM links WHERE node_id=?", (node,)).fetchall():
+                    attachments.add_file(conn, ATTACH_DIR, ws_id, r["case_id"], path, "automation", now(),
+                                         run_id=self.run_id, source=f"automation run #{self.run_id}")
 
 
 RUNNER = Runner()
@@ -704,7 +762,7 @@ SENT = object()   # a handler already wrote its own response (an HTML page)
 # API
 # ---------------------------------------------------------------------------
 
-CASE_FIELDS = ["title", "module", "section", "priority", "preconditions", "steps", "expected", "test_data",
+CASE_FIELDS = ["ref", "title", "module", "section", "priority", "preconditions", "steps", "expected", "test_data",
                "notes", "status"]
 
 
@@ -722,18 +780,20 @@ def case_row(conn, case_id):
     case["history"] = rows(conn.execute(
         "SELECT run_id, status, at, source FROM case_history WHERE case_id=? ORDER BY rowid DESC LIMIT 30",
         (case_id,)))
+    case["attachments"] = attachments.for_case(conn, case_id)
     return case
 
 
 def list_cases(q, ws_id):
-    sql = """SELECT c.*, (SELECT COUNT(*) FROM links l WHERE l.case_id = c.id) AS link_count
+    sql = """SELECT c.*, (SELECT COUNT(*) FROM links l WHERE l.case_id = c.id) AS link_count,
+                    (SELECT COUNT(*) FROM attachments x WHERE x.case_id = c.id) AS attachment_count
              FROM cases c WHERE c.workspace_id = ?"""
     args = [ws_id]
     if q.get("q"):
         sql += """ AND (c.title LIKE ? OR c.steps LIKE ? OR c.expected LIKE ? OR c.test_data LIKE ?
-                   OR ('TC-' || printf('%04d', c.id)) LIKE ?)"""
+                   OR c.ref LIKE ? OR ('TC-' || printf('%04d', c.id)) LIKE ?)"""
         like = f"%{q['q']}%"
-        args += [like] * 5
+        args += [like] * 6
     if "section" in q:
         sql += " AND c.section = ?"
         args.append(q["section"])
@@ -858,6 +918,17 @@ def summary(ws_id):
         sections = rows(conn.execute(
             """SELECT module, section, COUNT(*) total FROM cases WHERE workspace_id = ?
                GROUP BY module, section ORDER BY module, section""", (ws_id,)))
+        have_mod = {m["module"] for m in modules}
+        have_sec = {(x["module"], x["section"]) for x in sections}
+        for r in conn.execute("SELECT module, section FROM modules WHERE workspace_id=? ORDER BY module, section",
+                              (ws_id,)).fetchall():
+            if r["module"] not in have_mod:
+                modules.append({"module": r["module"], "total": 0, "pass": 0, "fail": 0, "blocked": 0, "notrun": 0})
+                have_mod.add(r["module"])
+            if r["section"] and (r["module"], r["section"]) not in have_sec:
+                sections.append({"module": r["module"], "section": r["section"], "total": 0})
+        modules.sort(key=lambda m: (m["module"] or "").lower())
+        sections.sort(key=lambda x: ((x["module"] or "").lower(), (x["section"] or "").lower()))
         suites = [r[0] for r in conn.execute(
             """SELECT DISTINCT a.suite FROM automation_tests a JOIN projects p ON p.id = a.project_id
                WHERE a.present = 1 AND p.workspace_id = ? ORDER BY a.suite""", (ws_id,))]
@@ -874,7 +945,7 @@ def summary(ws_id):
     }
 
 
-EXPORT_COLUMNS = ["ID", "Title", "Module", "Section", "Priority", "Status", "Preconditions", "Steps",
+EXPORT_COLUMNS = ["ID", "External ID", "Title", "Module", "Section", "Priority", "Status", "Preconditions", "Steps",
                   "Expected Result", "Test Data", "Notes", "Automation Tests", "Last Run", "Created", "Updated"]
 
 
@@ -892,7 +963,7 @@ def cases_with_links(ws_id):
 
 
 def export_rows(ws_id):
-    return [[f"TC-{c['id']:04d}", c["title"], c["module"], c["section"], c["priority"], c["status"],
+    return [[f"TC-{c['id']:04d}", c["ref"] or "", c["title"], c["module"], c["section"], c["priority"], c["status"],
              c["preconditions"], c["steps"], c["expected"], c["test_data"], c["notes"],
              "\n".join(c["links"]), c["last_run_at"] or "", c["created_at"], c["updated_at"]]
             for c in cases_with_links(ws_id)]
@@ -927,7 +998,7 @@ def export_file(fmt, ws_id, ws_key="cflow"):
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2F6FDE")
-    widths = [10, 50, 26, 26, 10, 10, 30, 60, 40, 30, 30, 70, 19, 19, 19]
+    widths = [10, 14, 50, 26, 26, 10, 10, 30, 60, 40, 30, 30, 70, 19, 19, 19]
     for i, w in enumerate(widths):
         ws.column_dimensions[chr(65 + i)].width = w
     for row in ws.iter_rows(min_row=2):
@@ -960,6 +1031,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def body(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            raise ValueError(f"Upload too large (over {MAX_BODY // (1024 * 1024)} MB)")
         return json.loads(self.rfile.read(length) or b"{}") if length else {}
 
     def request_allowed(self, method):
@@ -1262,6 +1335,11 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.save_case(None, self.body())
             if rest == ["generate"] and method == "POST":
                 return self.generate_cases(self.body())
+            if rest == ["import", "preview"] and method == "POST":
+                b = self.body()
+                return importer.preview(b.get("name"), b.get("content"))
+            if rest == ["import"] and method == "POST":
+                return self.import_cases(self.body())
             if rest == ["run"] and method == "POST":
                 return self.run_cases(self.body())
             case_id = int(rest[0])
@@ -1277,8 +1355,23 @@ class Handler(SimpleHTTPRequestHandler):
                     with db() as conn:
                         conn.execute("DELETE FROM links WHERE case_id=?", (case_id,))
                         conn.execute("DELETE FROM case_history WHERE case_id=?", (case_id,))
+                        conn.execute("DELETE FROM test_run_cases WHERE case_id=?", (case_id,))
+                        attachments.delete_for_case(conn, case_id)
                         conn.execute("DELETE FROM cases WHERE id=?", (case_id,))
                     return {"ok": True}
+            if rest[1:] == ["attachments"] and method == "POST":
+                b = self.body()
+                out = []
+                with db() as conn:
+                    tr = int(b["test_run_id"]) if b.get("test_run_id") else None
+                    if tr and not conn.execute("SELECT 1 FROM test_runs WHERE id=? AND workspace_id=?",
+                                               (tr, ws_id)).fetchone():
+                        raise ValueError("Unknown test run")
+                    for f in (b.get("files") or [])[:20]:
+                        out.append(attachments.add(conn, ATTACH_DIR, ws_id, case_id, f.get("name"), f.get("content"),
+                                                   self.user["email"], now(), test_run_id=tr,
+                                                   source=f"test run TR-{tr}" if tr else "upload"))
+                return out
             if rest[1:] == ["links"] and method == "PUT":
                 with db() as conn:
                     node_ids = self.own_node_ids(conn, self.body().get("node_ids", []))
@@ -1298,13 +1391,38 @@ class Handler(SimpleHTTPRequestHandler):
                 run_id = int(rest[0])
                 if len(rest) == 1:
                     if method == "GET":
-                        return testruns.get_run(conn, ws_id, run_id)
+                        run = testruns.get_run(conn, ws_id, run_id)
+                        if run:
+                            run["attachments"] = attachments.for_test_run(conn, run_id)
+                        return run
                     if method == "PUT":
                         return testruns.update_run(conn, ws_id, run_id, self.body(), now())
                     if method == "DELETE":
                         return testruns.delete_run(conn, ws_id, run_id)
                 if len(rest) == 3 and rest[1] == "cases" and method == "PUT":
                     return testruns.record(conn, ws_id, run_id, int(rest[2]), self.body(), self.user["email"], now())
+
+        if head == "attachments" and len(rest) == 1:
+            with db() as conn:
+                if method == "GET":
+                    f = attachments.file_for(conn, ws_id, int(rest[0]))
+                    if not f:
+                        return None
+                    body, ctype, name, inline = f
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Disposition", f'{"inline" if inline else "attachment"}; filename="{name}"')
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return SENT
+                if method == "DELETE":
+                    return attachments.delete(conn, ws_id, int(rest[0]))
+
+        if head == "modules":
+            return self.dispatch_modules(method, self.body() if method != "GET" else {})
 
         if head == "reports" and method == "GET":
             with db() as conn:
@@ -1364,6 +1482,7 @@ class Handler(SimpleHTTPRequestHandler):
                            FROM run_results r LEFT JOIN automation_tests a ON a.node_id = r.node_id
                            LEFT JOIN projects p ON p.id = a.project_id
                            WHERE r.run_id=? ORDER BY r.rowid""", (run_id,)))
+                    run["attachments"] = attachments.for_run(conn, run_id)
                     return run
             if rest[1:] == ["report"] and method == "GET":
                 self.send_html(build_report(run_id), download=q.get("download") == "1",
@@ -1417,6 +1536,116 @@ class Handler(SimpleHTTPRequestHandler):
                 conn.executemany("INSERT OR IGNORE INTO links (case_id, node_id) VALUES (?,?)",
                                  [(case_id, n) for n in node_ids])
             return case_row(conn, case_id)
+
+    def import_cases(self, data):
+        """Create (or update) cases from an Excel / CSV sheet confirmed in the import dialog."""
+        recs = importer.cases_from_upload(data.get("name"), data.get("content"), data.get("sheets") or [])
+        if not recs:
+            raise ValueError("No test cases found -- map a column to Title (and check the header row)")
+        update = data.get("duplicates") == "update"
+        ws_id, stamp, who = self.ws["id"], now(), self.user["email"]
+        created = updated = skipped = 0
+        with db() as conn:
+            for rec in recs:
+                rec = {k: v for k, v in rec.items() if k in CASE_FIELDS and v not in (None, "")}
+                existing = None
+                if rec.get("ref"):
+                    existing = conn.execute("SELECT * FROM cases WHERE workspace_id=? AND ref=? AND module=?",
+                                            (ws_id, rec["ref"], rec.get("module", ""))).fetchone()
+                    m = re.fullmatch(r"TC-(\d{4,})", rec["ref"].strip(), re.I)     # our own export's IDs
+                    if not existing and m:
+                        existing = conn.execute(
+                            "SELECT * FROM cases WHERE workspace_id=? AND id=? AND (title=? OR module=?)",
+                            (ws_id, int(m.group(1)), rec["title"], rec.get("module", ""))).fetchone()
+                        if existing:
+                            rec.pop("ref")
+                if not existing:
+                    existing = conn.execute("SELECT * FROM cases WHERE workspace_id=? AND title=? AND module=?",
+                                            (ws_id, rec["title"], rec.get("module", ""))).fetchone()
+                conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                             (ws_id, rec.get("module", ""), rec.get("section", ""), stamp))
+                if existing:
+                    if not update:
+                        skipped += 1
+                        continue
+                    conn.execute(f"UPDATE cases SET {', '.join(f'{k}=?' for k in rec)}, updated_at=? WHERE id=?",
+                                 [*rec.values(), stamp, existing["id"]])
+                    if rec.get("status") and rec["status"] != existing["status"]:
+                        conn.execute("INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
+                                     (existing["id"], None, rec["status"], stamp, f"import: {who}"))
+                    updated += 1
+                    continue
+                rec.setdefault("priority", "Medium")
+                rec.setdefault("status", "Not Run")
+                rec.update(workspace_id=ws_id, created_at=stamp, updated_at=stamp)
+                cid = conn.execute(f"INSERT INTO cases ({', '.join(rec)}) VALUES ({', '.join('?' * len(rec))})",
+                                   list(rec.values())).lastrowid
+                if rec["status"] != "Not Run":
+                    conn.execute("INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
+                                 (cid, None, rec["status"], stamp, f"import: {who}"))
+                created += 1
+        return {"created": created, "updated": updated, "skipped": skipped, "total": len(recs)}
+
+    def dispatch_modules(self, method, b):
+        """Modules (suites) and their sections: list, add, rename, delete / move."""
+        ws_id, stamp = self.ws["id"], now()
+        clean = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()[:120]
+        module, section, name = clean(b.get("module")), clean(b.get("section")), clean(b.get("name"))
+        with db() as conn:
+            if method == "GET":
+                return summary(ws_id)["sections"]
+            if method == "POST":
+                if not name:
+                    raise ValueError("Enter a name")
+                if module:      # a new section in an existing module
+                    conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                 (ws_id, module, "", stamp))
+                    conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                 (ws_id, module, name, stamp))
+                else:
+                    conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                 (ws_id, name, "", stamp))
+                return {"ok": True}
+            if method == "PUT":            # rename
+                if not name:
+                    raise ValueError("Enter the new name")
+                if "section" in b:
+                    conn.execute("UPDATE cases SET section=?, updated_at=? WHERE workspace_id=? AND module=? AND section=?",
+                                 (name, stamp, ws_id, module, section))
+                    conn.execute("UPDATE OR IGNORE modules SET section=? WHERE workspace_id=? AND module=? AND section=?",
+                                 (name, ws_id, module, section))
+                    conn.execute("DELETE FROM modules WHERE workspace_id=? AND module=? AND section=?", (ws_id, module, section))
+                    conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                 (ws_id, module, name, stamp))
+                else:
+                    conn.execute("UPDATE cases SET module=?, updated_at=? WHERE workspace_id=? AND module=?",
+                                 (name, stamp, ws_id, module))
+                    for r in conn.execute("SELECT section FROM modules WHERE workspace_id=? AND module=?",
+                                          (ws_id, module)).fetchall():
+                        conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                     (ws_id, name, r["section"], stamp))
+                    conn.execute("DELETE FROM modules WHERE workspace_id=? AND module=?", (ws_id, module))
+                    conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                                 (ws_id, name, "", stamp))
+                return {"ok": True}
+            if method == "DELETE":
+                is_section = "section" in b
+                where, args = ("module=? AND section=?", [module, section]) if is_section else ("module=?", [module])
+                n = conn.execute(f"SELECT COUNT(*) FROM cases WHERE workspace_id=? AND {where}", [ws_id, *args]).fetchone()[0]
+                move_to = b.get("move_to")
+                if n and move_to is None:
+                    raise ValueError(f"{n} test case(s) are in it -- choose where to move them first")
+                if n:
+                    target = clean(move_to)
+                    if is_section:
+                        conn.execute(f"UPDATE cases SET section=?, updated_at=? WHERE workspace_id=? AND {where}",
+                                     [target, stamp, ws_id, *args])
+                    else:
+                        conn.execute(f"UPDATE cases SET module=?, updated_at=? WHERE workspace_id=? AND {where}",
+                                     [target, stamp, ws_id, *args])
+                conn.execute(f"DELETE FROM modules WHERE workspace_id=? AND {where}", [ws_id, *args])
+                return {"ok": True, "moved": n}
+        return None
 
     def upload_results(self, data):
         """Results file(s) from a run made elsewhere (CI, a teammate, the IDE):
