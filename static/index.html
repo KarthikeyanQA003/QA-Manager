@@ -72,6 +72,19 @@ nav button.active { background: #e8effc; color: var(--accent); font-weight: 600;
 .mode .muted { font-size: 12px; text-align: center; }
 .mode-ico { font-size: 26px; }
 #runBadge.live { color: var(--accent); font-weight: 600; cursor: pointer; }
+.live-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; background: #eef4ff; border: 1px solid #c9dafb;
+              border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+.live-strip .grow { flex: 1; min-width: 200px; }
+.live-strip .now { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: pulse 1.2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.progress { height: 8px; border-radius: 4px; background: #dfe6f3; overflow: hidden; display: flex; margin-top: 6px; }
+.progress span { height: 100%; transition: width .4s; }
+.s-running { background: var(--accent); } .s-queued { background: #b7bdc9; }
+.rd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.rd-cards .card { padding: 10px 12px; } .rd-cards .card .n { font-size: 22px; }
+tr.is-running td { background: #f2f7ff; }
+details.rawlog summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 8px 0; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
@@ -127,7 +140,7 @@ a.ide:hover { text-decoration: underline; }
 .side a { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 13px; }
 .side a:hover { background: #f0f3f8; }
 .side a.on { background: #e8effc; color: var(--accent); font-weight: 600; }
-.board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; }
+.board { display: grid; grid-template-columns: repeat(6, minmax(200px, 1fr)); gap: 12px; overflow-x: auto; }
 .col { background: #eceff4; border-radius: 8px; padding: 8px; min-height: 200px; max-height: calc(100vh - 170px); overflow: auto; }
 .col.over { outline: 2px dashed var(--accent); }
 .col h4 { margin: 4px 4px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; display: flex; justify-content: space-between; }
@@ -244,6 +257,7 @@ a.ide:hover { text-decoration: underline; }
 </header>
 
 <main>
+  <div id="liveStrip" class="live-strip hidden"></div>
   <!-- Overview: the project's landing page -->
   <section id="view-dashboard">
     <div class="panel ws-details" id="wsDetails"></div>
@@ -418,13 +432,17 @@ a.ide:hover { text-decoration: underline; }
 
 <!-- Run detail -->
 <dialog id="runDetailDlg" style="width:min(1200px,96vw)">
-  <div class="dlg-head"><h2 id="rdTitle">Run</h2><button class="btn danger hidden" id="cancelRun">Stop run</button>&nbsp;<button class="btn" data-close>✕</button></div>
+  <div class="dlg-head"><h2 id="rdTitle">Run</h2><a class="btn" id="rdReport" target="_blank" rel="noopener" style="text-decoration:none;color:inherit">📄 HTML report</a>&nbsp;<button class="btn danger hidden" id="cancelRun">Stop run</button>&nbsp;<button class="btn" data-close>✕</button></div>
   <div class="dlg-body">
     <div id="rdMeta" class="toolbar"></div>
-    <div id="rdResultsWrap" class="hidden" style="margin-bottom:12px">
-      <table><thead><tr><th>Automation test</th><th>Result</th><th>Duration</th><th>Updated cases</th><th>Message</th></tr></thead><tbody id="rdResults"></tbody></table>
-    </div>
-    <pre class="log" id="rdLog"></pre>
+    <div id="rdCards" class="rd-cards"></div>
+    <div id="rdProgress" class="progress" style="margin:0 0 12px"></div>
+    <div id="rdNow" class="muted" style="margin-bottom:10px"></div>
+    <div class="toolbar"><span class="count" id="rdCount"></span><span class="grow"></span>
+      <select id="rdFilter"><option value="">All tests</option><option value="running">Running</option><option value="failed error">Failed</option>
+        <option value="passed">Passed</option><option value="skipped">Skipped</option><option value="queued not run">Waiting / not run</option></select></div>
+    <table><thead><tr><th>Test case / automation test</th><th>Result</th><th>Started (IST)</th><th>Finished (IST)</th><th>Duration</th><th>Message</th></tr></thead><tbody id="rdResults"></tbody></table>
+    <details class="rawlog" id="rdLogWrap"><summary>Console output</summary><pre class="log" id="rdLog"></pre></details>
   </div>
 </dialog>
 
@@ -476,6 +494,20 @@ a.ide:hover { text-decoration: underline; }
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const tcId = id => "TC-" + String(id).padStart(4, "0");
+// Server times are IST "YYYY-MM-DD HH:MM:SS" -> "27-10-2026 02:35:10 PM IST".
+function ist(s, withZone = true) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s || "");
+  if (!m) return s || "";
+  const h = +m[4], h12 = String(h % 12 || 12).padStart(2, "0");
+  return `${m[3]}-${m[2]}-${m[1]} ${h12}:${m[5]}:${m[6]} ${h < 12 ? "AM" : "PM"}${withZone ? " IST" : ""}`;
+}
+function elapsed(from, to) {
+  const t = x => { const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(x || ""); return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null; };
+  const a = t(from), b = to ? t(to) : Date.now() + 19800000;   // now, in IST wall-clock
+  if (a == null || b == null) return "";
+  const sec = Math.max(0, Math.round((b - a) / 1000)), hh = Math.floor(sec / 3600), mm = Math.floor(sec % 3600 / 60), ss = sec % 60;
+  return (hh ? hh + "h " : "") + String(mm).padStart(hh ? 2 : 1, "0") + "m " + String(ss).padStart(2, "0") + "s";
+}
 const chip = (s, label) => `<span class="chip s-${esc((s || "none").replace(/\s/g, ""))}">${esc(label || s || "—")}</span>`;
 const shortNode = n => n.replace(/^TestCases\//, "");
 // Opens the file at the line in VS Code (vscode:// URL handler).
@@ -539,6 +571,7 @@ const loadDashboard = guard(async () => {
   const card = (n, l, color) => `<div class="card"><div class="n" style="color:${color || "inherit"}">${n}</div><div class="l">${l}</div></div>`;
   $("#cards").innerHTML =
     card(s.cases_total, "Test cases") +
+    (st.Running ? card(st.Running, "Running now", "var(--accent)") : "") +
     card(st.Pass || 0, "Pass", "var(--pass)") + card(st.Fail || 0, "Fail", "var(--fail)") +
     card((st.Blocked || 0) + (st.Skipped || 0), "Blocked / skipped", "var(--skip)") +
     card(st["Not Run"] || 0, "Not run", "var(--notrun)") +
@@ -615,7 +648,7 @@ const loadCases = guard(async () => {
       <td><input type="checkbox" data-sel="${c.id}" ${selectedCases.has(c.id) ? "checked" : ""}></td>
       <td class="mono">${tcId(c.id)}</td><td>${esc(c.title)}</td><td>${esc(c.module)}</td><td>${esc(c.priority)}</td>
       <td>${c.link_count ? `⚙ ${c.link_count} test${c.link_count > 1 ? "s" : ""}` : '<span class="muted">Manual</span>'}</td>
-      <td>${chip(c.status)}</td><td class="muted">${esc(c.last_run_at || "")}${c.last_run_id ? ` · <a href="#" data-run="${c.last_run_id}">#${c.last_run_id}</a>` : ""}</td></tr>`).join("")
+      <td>${chip(c.status)}</td><td class="muted">${esc(ist(c.last_run_at))}${c.last_run_id ? ` · <a href="#" data-run="${c.last_run_id}">#${c.last_run_id}</a>` : ""}</td></tr>`).join("")
     || `<tr><td colspan="8" class="muted">No matching test cases.</td></tr>`;
   document.querySelectorAll("#caseRows tr[data-id]").forEach(tr => tr.onclick = e => {
     if (e.target.dataset.sel) return;
@@ -700,7 +733,7 @@ const openCase = guard(async id => {
   $("#deleteCase").classList.toggle("hidden", !id);
   $("#runThisCase").classList.toggle("hidden", !id);
   $("#historyWrap").classList.toggle("hidden", !c.history.length);
-  $("#historyRows").innerHTML = c.history.map(h => `<tr><td>${esc(h.at)}</td><td>${chip(h.status)}</td><td>${esc(h.source)}</td><td>${h.run_id ? `<a href="#" data-run="${h.run_id}">#${h.run_id}</a>` : ""}</td></tr>`).join("");
+  $("#historyRows").innerHTML = c.history.map(h => `<tr><td class="muted" style="white-space:nowrap">${esc(ist(h.at))}</td><td>${chip(h.status)}</td><td>${esc(h.source)}</td><td>${h.run_id ? `<a href="#" data-run="${h.run_id}">#${h.run_id}</a>` : ""}</td></tr>`).join("");
   $("#historyRows").querySelectorAll("[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); openRun(+a.dataset.run); });
   $("#pickQ").value = ""; $("#pickSuite").value = c.module && META.suites.includes(c.module) ? c.module : "";
   await loadPicker();
@@ -768,7 +801,7 @@ const loadAuto = guard(async () => {
       <td class="muted">${esc(t.markers)}</td>
       <td>${t.case_ids ? t.case_ids.split(",").map(id => `<a href="#" data-case="${id}">${tcId(id)}</a>`).join(" ") : '<span class="muted">—</span>'}</td>
       <td>${chip(t.last_result, t.last_result || "never run")}</td>
-      <td class="muted">${esc(t.last_run_at || "")}${t.last_run_id ? ` · <a href="#" data-run="${t.last_run_id}">#${t.last_run_id}</a>` : ""}</td></tr>`).join("")
+      <td class="muted">${esc(ist(t.last_run_at))}${t.last_run_id ? ` · <a href="#" data-run="${t.last_run_id}">#${t.last_run_id}</a>` : ""}</td></tr>`).join("")
     || `<tr><td colspan="7" class="muted">No automation tests match.</td></tr>`;
   $("#autoRows").querySelectorAll("[data-sel]").forEach(cb => cb.onchange = () => {
     cb.checked ? selectedAuto.add(cb.dataset.sel) : selectedAuto.delete(cb.dataset.sel); syncAutoButtons();
@@ -809,7 +842,7 @@ const loadProjects = guard(async () => {
       <td class="mono">${esc(p.path)}${p.scan_dir ? `<span class="muted"> / ${esc(p.scan_dir)}</span>` : ""}
         ${p.exists ? ` <a class="ide" href="vscode://file/${encodeURI(p.path.replace(/\\/g, "/"))}">⧉ Open in IDE</a>` : ' <b style="color:var(--fail)">folder missing</b>'}</td>
       <td>${p.tests}</td><td>${p.linked}/${p.tests}</td>
-      <td class="muted">${esc(p.last_scan_at || "never")}</td>
+      <td class="muted">${esc(ist(p.last_scan_at) || "never")}</td>
       <td style="white-space:nowrap">
         <button class="btn primary" data-runall="${p.id}">▶ Run all</button>
         <button class="btn" data-scan="${p.id}">⟳ Scan</button>
@@ -859,7 +892,7 @@ function runRowsHtml(list, compact) {
     const n = (() => { try { return JSON.parse(r.targets || "[]").length; } catch { return ""; } })();
     return `<tr class="click" data-run="${r.id}"><td>#${r.id}</td><td>${esc(r.title)}</td><td>${chip(r.status)}</td>
       ${compact ? "" : `<td>${n || ""}</td>`}<td>${r.passed}</td><td>${r.failed + r.errors}</td><td>${r.skipped}</td>
-      <td class="muted">${esc(r.started_at)}</td>${compact ? "" : `<td class="muted">${esc(r.finished_at || "")}</td>`}</tr>`;
+      <td class="muted" style="white-space:nowrap">${esc(ist(r.started_at))}</td>${compact ? "" : `<td class="muted" style="white-space:nowrap">${esc(ist(r.finished_at))}</td>`}</tr>`;
   }).join("");
 }
 function bindRunRows(sel) { document.querySelectorAll(sel + " tr[data-run]").forEach(tr => tr.onclick = () => openRun(+tr.dataset.run)); }
@@ -920,7 +953,7 @@ document.querySelectorAll("#runDlg .mode").forEach(b => b.onclick = guard(async 
   if (headless) {
     // Background run: no log window; the header badge tracks it and the
     // results land on the cases when it finishes.
-    toast(`Run #${r.run_id} started in the background${r.tests ? ` — ${r.tests} test(s)` : ""}`);
+    toast(`Run #${r.run_id} started in the background${r.tests ? ` — ${r.tests} test(s)` : ""} — progress shows at the top of the page`);
     watchRun(r.run_id);
   } else {
     toast(`Run #${r.run_id} started — the browser will open`);
@@ -935,15 +968,48 @@ function watchRun(id) {
     if (run.status === "Running") return;
     clearInterval(h);
     updateBadge(null);
-    toast(`Run #${id} ${run.status.toLowerCase()} — ✔ ${run.passed}  ✖ ${run.failed + run.errors}  ⤼ ${run.skipped}`, run.status !== "Passed");
+    toast(`Run #${id} ${run.status.toLowerCase()} — ✔ ${run.passed}  ✖ ${run.failed + run.errors}  ⤼ ${run.skipped} — HTML report ready`, run.status !== "Passed");
     refresh();
   }), 3000);
+}
+
+const OUT_ORDER = { running: 0, failed: 1, error: 1, passed: 2, skipped: 2, "not run": 2, queued: 3 };
+const OUT_LABEL = { passed: "Pass", failed: "Fail", error: "Error", skipped: "Skipped", running: "Running", queued: "Waiting", "not run": "Not run" };
+const outChip = o => `<span class="chip ${o === "running" ? "s-running" : o === "queued" ? "s-queued" : o === "not run" ? "s-none" : "s-" + o}">${o === "running" ? '<span class="pulse" style="background:#fff"></span>' : ""}${esc(OUT_LABEL[o] || o)}</span>`;
+
+function progressBar(c, total) {
+  const w = n => (100 * n / (total || 1)).toFixed(2) + "%";
+  return `<span style="width:${w(c.passed)};background:var(--pass)"></span><span style="width:${w(c.failed)};background:var(--fail)"></span>` +
+         `<span style="width:${w(c.skipped)};background:var(--skip)"></span><span style="width:${w(c.running)};background:var(--accent)"></span>`;
 }
 
 const openRun = guard(async id => {
   clearInterval(runPoll);
   $("#rdLog").textContent = ""; let offset = 0;
+  $("#rdReport").href = `/api/runs/${id}/report?ws=${WS.id}`;
+  $("#rdFilter").value = "";
   $("#runDetailDlg").showModal();
+  let last = null;
+  const render = () => {
+    const run = last; if (!run) return;
+    const f = $("#rdFilter").value;
+    const list = run.results.filter(r => !f || f.split(" ").includes(r.outcome))
+      .sort((a, b) => (OUT_ORDER[a.outcome] ?? 2) - (OUT_ORDER[b.outcome] ?? 2) ||
+                      (OUT_ORDER[a.outcome] === 2 ? (b.finished_at || "").localeCompare(a.finished_at || "") : 0));
+    $("#rdCount").textContent = `${list.length} of ${run.results.length} test(s)`;
+    $("#rdResults").innerHTML = list.map(r => {
+      const cases = r.case_ids ? r.case_ids.split(",").map(c => `<a href="#" data-case="${c}">${tcId(c)}</a>`).join(" ") : "";
+      const live = r.outcome === "running";
+      return `<tr class="${live ? "is-running" : ""}"><td>${cases ? `<div>${cases}</div>` : ""}<span class="mono">${esc(shortNode(r.node_id))}</span> ${ide(r.file, r.line, r.root)}</td>
+        <td>${outChip(r.outcome)}</td>
+        <td class="muted" style="white-space:nowrap">${esc(ist(r.started_at, false))}</td>
+        <td class="muted" style="white-space:nowrap">${live || r.outcome === "queued" ? "" : esc(ist(r.finished_at, false))}</td>
+        <td style="white-space:nowrap">${live ? elapsed(r.started_at) : r.duration ? r.duration.toFixed(1) + "s" : ""}</td>
+        <td class="muted" style="max-width:380px">${esc((r.message || "").split("\n")[0].slice(0, 240))}</td></tr>`;
+    }).join("") || `<tr><td colspan="6" class="muted">No tests match.</td></tr>`;
+    $("#rdResults").querySelectorAll("[data-case]").forEach(a => a.onclick = e => { e.preventDefault(); $("#runDetailDlg").close(); openCase(+a.dataset.case); });
+  };
+  $("#rdFilter").onchange = render;
   const tick = async () => {
     const [run, log] = await Promise.all([api("runs/" + id), api(`runs/${id}/log?offset=${offset}`)]);
     offset = log.offset;
@@ -953,20 +1019,29 @@ const openRun = guard(async id => {
       if (pre.textContent.length > 600000) pre.textContent = pre.textContent.slice(-400000);
       if (atBottom) pre.scrollTop = pre.scrollHeight;
     }
+    last = run;
     const running = run.status === "Running";
     $("#rdTitle").textContent = `Run #${run.id} — ${run.title}`;
     $("#cancelRun").classList.toggle("hidden", !running);
     $("#cancelRun").onclick = guard(async () => { if (confirm("Stop this run?")) { await api(`runs/${id}/cancel`, { method: "POST" }); toast("Stopping…"); } });
     const opts = (() => { try { return JSON.parse(run.options || "{}"); } catch { return {}; } })();
-    $("#rdMeta").innerHTML = `${chip(run.status)} <span class="muted">Started ${esc(run.started_at)}${run.finished_at ? " · finished " + esc(run.finished_at) : ""}</span>
-      <span class="muted">${opts.region ? "Region " + esc(opts.region) + " · " : ""}${opts.headless ? "headless" : "headed"}</span>
-      <span class="grow"></span><span>✔ ${run.passed} &nbsp; ✖ ${run.failed + run.errors} &nbsp; ⤼ ${run.skipped}</span>`;
-    $("#rdResultsWrap").classList.toggle("hidden", !run.results.length);
-    $("#rdResults").innerHTML = run.results.map(r => `<tr><td><span class="mono">${esc(shortNode(r.node_id))}</span> ${ide(r.file, r.line, r.root)}</td><td>${chip(r.outcome)}</td>
-      <td>${(r.duration || 0).toFixed(1)}s</td>
-      <td>${r.case_ids ? r.case_ids.split(",").map(c => `<a href="#" data-case="${c}">${tcId(c)}</a>`).join(" ") : '<span class="muted">none linked</span>'}</td>
-      <td class="muted" style="max-width:420px">${esc((r.message || "").split("\n")[0].slice(0, 240))}</td></tr>`).join("");
-    $("#rdResults").querySelectorAll("[data-case]").forEach(a => a.onclick = e => { e.preventDefault(); $("#runDetailDlg").close(); openCase(+a.dataset.case); });
+    $("#rdMeta").innerHTML = `${chip(run.status)} <span class="muted">Started ${esc(ist(run.started_at))}${run.finished_at ? " · finished " + esc(ist(run.finished_at)) : ""} · ${elapsed(run.started_at, run.finished_at)}</span>
+      <span class="muted">${opts.region ? "Region " + esc(opts.region) + " · " : ""}${opts.headless ? "headless" : "headed"}</span>`;
+    const c = { passed: 0, failed: 0, skipped: 0, running: 0, waiting: 0 };
+    run.results.forEach(r => {
+      if (r.outcome === "passed") c.passed++; else if (r.outcome === "failed" || r.outcome === "error") c.failed++;
+      else if (r.outcome === "skipped") c.skipped++; else if (r.outcome === "running") c.running++; else c.waiting++;
+    });
+    const total = run.results.length, done = c.passed + c.failed + c.skipped;
+    const card = (n, l, color) => `<div class="card"><div class="n" style="color:${color || "inherit"}">${n}</div><div class="l">${l}</div></div>`;
+    $("#rdCards").innerHTML = card(`${done}/${total}`, "Executed") + card(c.passed, "Pass", "var(--pass)") + card(c.failed, "Fail", "var(--fail)") +
+      card(c.skipped, "Skipped", "var(--skip)") + card(c.running, "Running", "var(--accent)") + card(c.waiting, running ? "Waiting" : "Not run", "var(--notrun)");
+    $("#rdProgress").innerHTML = progressBar(c, total);
+    const now = run.results.filter(r => r.outcome === "running");
+    $("#rdNow").innerHTML = running
+      ? (now.length ? `<span class="pulse"></span><b>Now running:</b> ${now.map(r => esc(shortNode(r.node_id))).join(", ")}` : '<span class="pulse"></span>Starting…')
+      : "";
+    render();
     if (!running) { clearInterval(runPoll); updateBadge(null); refresh(); }
   };
   await tick();
@@ -982,19 +1057,37 @@ function updateBadge(runId) {
   $("#runSuiteBtn").disabled = !!runId;   // one run at a time
   $("#runSuiteBtn").title = runId ? `Run #${runId} is in progress` : "Run a whole suite, project, or everything";
 }
-// Keep the board live: refresh it while a run is going and once more when it ends.
-let lastRunning = null;
+// Keep the Dashboard and Board live: while a run is going they refresh every few
+// seconds as each test finishes, and the strip on top shows what is running now.
+let lastRunning = null, lastDone = -1;
+function renderLive(live) {
+  const el = $("#liveStrip");
+  if (!live) { el.classList.add("hidden"); return; }
+  const c = { passed: live.passed, failed: live.failed, skipped: live.skipped, running: live.now_running.length };
+  el.innerHTML = `<div><span class="pulse"></span><b>Run #${live.id}</b> ${esc(live.title)}
+      <div class="muted" style="font-size:12px">Started ${esc(ist(live.started_at))} · ${elapsed(live.started_at)}</div></div>
+    <div class="grow"><div class="now">${live.now_running.length ? "Now running: <b>" + live.now_running.map(esc).join(", ") + "</b>" : "Starting…"}</div>
+      <div class="progress">${progressBar(c, live.total)}</div></div>
+    <div><b>${live.done}/${live.total}</b> done &nbsp; <span style="color:var(--pass)">✔ ${live.passed}</span> &nbsp;
+      <span style="color:var(--fail)">✖ ${live.failed}</span> &nbsp; <span style="color:var(--skip)">⤼ ${live.skipped}</span></div>
+    <button class="btn" id="liveView">View live</button>
+    <a class="btn" style="text-decoration:none;color:inherit" target="_blank" rel="noopener" href="/api/runs/${live.id}/report?ws=${WS.id}">📄 Report</a>`;
+  $("#liveView").onclick = () => openRun(live.id);
+}
 setInterval(async () => {
   if (!WS || $("#app").classList.contains("hidden")) return;
   try {
     const s = await api("summary");
     updateBadge(s.running);
+    renderLive(s.live);
     const justFinished = lastRunning && !s.running;
     lastRunning = s.running;
+    const done = s.live ? s.live.done + s.live.now_running.length * 0.5 : -1;
+    const changed = done !== lastDone; lastDone = done;
     const dialogOpen = [...document.querySelectorAll("dialog")].some(d => d.open);
-    if ((s.running || justFinished) && !dialogOpen && ["board", "dashboard"].includes(currentView)) refresh();
+    if (((s.running && changed) || justFinished) && !dialogOpen && ["board", "dashboard"].includes(currentView)) refresh();
   } catch { /* signed out / switched */ }
-}, 5000);
+}, 2000);
 
 function refresh() { show(currentView); }
 
@@ -1243,7 +1336,7 @@ function renderWsDetails(s) {
       <dt>Owner</dt><dd>${esc(w.owner || "—")}</dd>
       <dt>Team</dt><dd>${(w.members || []).length ? w.members.map(esc).join("<br>") : '<span class="muted">just the owner</span>'}</dd>
       <dt>Automation</dt><dd>${conns.length ? conns.map(c => `${esc(c.name)} <span class="muted">(${esc(META.frameworks?.[c.framework] || c.framework)})</span>`).join("<br>") : '<a href="#" id="ovConnect">Connect automation</a>'}</dd>
-      <dt>Last run</dt><dd>${last ? `<a href="#" id="ovLastRun">#${last.id}</a> ${chip(last.status)} <span class="muted">${esc(last.started_at)}</span>` : '<span class="muted">none yet</span>'}</dd>
+      <dt>Last run</dt><dd>${last ? `<a href="#" id="ovLastRun">#${last.id}</a> ${chip(last.status)} <span class="muted">${esc(ist(last.started_at))}</span>` : '<span class="muted">none yet</span>'}</dd>
     </dl>`;
   $("#ovRunAll").onclick = guard(() => askSuiteRun());
   $("#ovCases").onclick = () => show("cases");

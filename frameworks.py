@@ -325,11 +325,43 @@ def build_command(framework, template, tests, junit, headless, region, universe=
     )
 
 
-def run_env(framework, junit):
+LIVE_PLUGIN_DIR = Path(__file__).resolve().parent / "live"
+PYTEST_FAMILY = ("cflow-pytest", "playwright-python", "pytest")
+
+
+def run_env(framework, junit, live_file=None):
     env = {}
     if framework == "playwright-js":
         env["PLAYWRIGHT_JUNIT_OUTPUT_NAME"] = str(junit)
+    if framework in PYTEST_FAMILY and live_file:
+        # live/tcm_live.py reports each test as it starts and finishes.
+        plugins = [p for p in os.environ.get("PYTEST_PLUGINS", "").split(",") if p.strip()]
+        env["PYTEST_PLUGINS"] = ",".join(plugins + ["tcm_live"])
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(LIVE_PLUGIN_DIR)] + [p for p in [os.environ.get("PYTHONPATH", "")] if p])
+        env["TCM_LIVE_FILE"] = str(live_file)
     return env
+
+
+# Playwright list reporter result line, e.g.
+#   "  ok 3 [chromium] › tests/login.spec.ts:12:5 › Login › signs in (2.1s)"
+# (Windows consoles get ok / x; others get ✓ / ✘; "-" is skipped.)
+_PW_LINE = re.compile(
+    r"^\s*(?P<mark>ok|x|✓|✘|-|°)\s+\d+\s+(?:\[[^\]]*\]\s+›\s+)?(?P<file>[^\s:]+):\d+:\d+\s+›\s+"
+    r"(?P<title>.+?)(?:\s+\((?:retry #\d+ )?[\d.]+m?s\)|\s+\(\d+(?:\.\d+)?m\))?\s*$")
+
+
+def parse_live_line(framework, line):
+    """(key, outcome) for a log line that reports a finished test, else None.
+    Used for frameworks without the pytest plugin (Playwright JS)."""
+    if framework != "playwright-js":
+        return None
+    m = _PW_LINE.match(line)
+    if not m:
+        return None
+    outcome = {"ok": "passed", "✓": "passed", "x": "failed", "✘": "failed"}.get(m["mark"], "skipped")
+    spec_file = re.split(r"[\\/]", m["file"])[-1]
+    return f"{spec_file}::{m['title'].strip()}", outcome
 
 
 def result_files(framework, project_root, junit, started_ts):

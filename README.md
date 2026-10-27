@@ -75,9 +75,27 @@ work.
 - **Automation**: every test found in the connected projects, with its last
   result and linked cases. Use *Create cases from selected* to make one linked
   case per test. Use *Re-scan tests* after adding or renaming tests.
-- **Run**: from either tab. Runs are headed by default (tick Headless for a
-  headless run), one at a time, with a single worker. Watch the live log in the
-  run window, and stop the run there if needed.
+- **Run**: from either tab. Choose Headed or Headless. Only one run can go at a
+  time, with a single worker.
+- **Live progress**: every test case updates as soon as its test finishes. You
+  don't have to wait for the whole run.
+  - A strip at the top of every page shows what is running now, the progress
+    and the pass/fail counts.
+  - The Dashboard and Board refresh every few seconds. A case whose test is
+    executing sits in the **Running** column.
+  - *View live* lists every test with its result, start and finish time. Your
+    console output is under *Console output*.
+  - For pytest-based projects this works through a small pytest plugin,
+    `live/tcm_live.py`, which the tool loads automatically. Your project needs
+    no changes. Playwright JS results come from its list reporter. Maven
+    results arrive when the run ends.
+- **HTML report**: every run gets a self-contained report. It shows a summary,
+  pass rate, a per-module breakdown and every test with its linked TC ids,
+  start and finish times, duration and failure details. You can filter and
+  search it. Open it with *HTML report* in the run window or *Report* on the
+  live strip. A copy is saved as `data/runs/run_<id>_report.html` when the run
+  ends.
+- **Times** are all India Standard Time and shown as `27-10-2026 02:35:10 PM IST`.
 
 How a case's status is set from a run: if any linked test failed or errored,
 the case is **Fail**. If all linked tests that ran passed, it is **Pass**. If

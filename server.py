@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -37,6 +37,7 @@ sys.path.insert(0, str(TOOL_DIR))  # so the sibling modules import from any work
 import auth  # noqa: E402
 import codegen  # noqa: E402
 import frameworks  # noqa: E402
+import report  # noqa: E402
 
 DATA_DIR = TOOL_DIR / "data"
 RUNS_DIR = DATA_DIR / "runs"
@@ -47,7 +48,10 @@ CONFIG_PATH = DATA_DIR / "config.json"
 # for local testing only. Off unless the server is started with the flag.
 DEV_USER = None
 
-CASE_STATUSES = ["Not Run", "Pass", "Fail", "Blocked", "Skipped"]
+CASE_STATUSES = ["Not Run", "Running", "Pass", "Fail", "Blocked", "Skipped"]
+
+# Every time the tool records is India Standard Time, whatever the machine's zone.
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
 PRIORITIES = ["High", "Medium", "Low"]
 
 # Project 1's node ids are its plain test ids (kept from when the tool only
@@ -104,7 +108,8 @@ CREATE TABLE IF NOT EXISTS runs (
     log_path TEXT, junit_path TEXT
 );
 CREATE TABLE IF NOT EXISTS run_results (
-    run_id INTEGER, node_id TEXT, outcome TEXT, duration REAL, message TEXT
+    run_id INTEGER, node_id TEXT, outcome TEXT, duration REAL, message TEXT,
+    started_at TEXT, finished_at TEXT
 );
 CREATE TABLE IF NOT EXISTS case_history (
     case_id INTEGER, run_id INTEGER, status TEXT, at TEXT, source TEXT
@@ -113,7 +118,11 @@ CREATE TABLE IF NOT EXISTS case_history (
 
 
 def now():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ist_from_ts(ts):
+    return datetime.fromtimestamp(ts, IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def db():
@@ -147,6 +156,10 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
         if "is_admin" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        rr_cols = {r["name"] for r in conn.execute("PRAGMA table_info(run_results)")}
+        for col in ("started_at", "finished_at"):
+            if col not in rr_cols:
+                conn.execute(f"ALTER TABLE run_results ADD COLUMN {col} TEXT")
         for table in ("cases", "projects", "runs"):
             cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
             if "workspace_id" not in cols:
@@ -170,6 +183,8 @@ def init_db():
             "UPDATE runs SET status='Aborted', finished_at=? WHERE status IN ('Running','Queued')",
             (now(),),
         )
+        conn.execute("UPDATE run_results SET outcome='not run' WHERE outcome IN ('queued','running')")
+        conn.execute("UPDATE cases SET status='Not Run' WHERE status='Running'")
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +316,7 @@ def apply_results(run_id, junit_paths, project_id=FIRST_PROJECT_ID, source="auto
                 print(f"[WARN] result for unknown test {key} (re-scan the project?)")
                 continue
             ran[node_id] = outcome
-            conn.execute(
-                "INSERT INTO run_results (run_id, node_id, outcome, duration, message) VALUES (?,?,?,?,?)",
-                (run_id, node_id, outcome, duration, message),
-            )
+            upsert_result(conn, run_id, node_id, outcome, duration, message, stamp, final=True)
             conn.execute(
                 """UPDATE automation_tests SET last_result=?, last_duration=?, last_message=?,
                    last_run_id=?, last_run_at=? WHERE node_id=?""",
@@ -321,24 +333,97 @@ def apply_results(run_id, junit_paths, project_id=FIRST_PROJECT_ID, source="auto
             for row in linked:
                 per_case.setdefault(row["case_id"], []).append(ran[row["node_id"]])
             for case_id, outcomes in per_case.items():
-                status = case_status_from(outcomes)
-                conn.execute(
-                    "UPDATE cases SET status=?, last_run_id=?, last_run_at=?, updated_at=? WHERE id=?",
-                    (status, run_id, stamp, stamp, case_id),
-                )
-                conn.execute(
-                    "INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
-                    (case_id, run_id, status, stamp, source),
-                )
+                set_case_status(conn, case_id, run_id, case_status_from(outcomes), stamp, source)
                 updated += 1
-
-        # A run can span several projects; accumulate.
-        conn.execute(
-            """UPDATE runs SET passed=passed+?, failed=failed+?, skipped=skipped+?, errors=errors+?
-               WHERE id=?""",
-            (counts["passed"], counts["failed"], counts["skipped"], counts["error"], run_id),
-        )
+        recount_run(conn, run_id)
     return updated
+
+
+def upsert_result(conn, run_id, node_id, outcome, duration, message, stamp, started_at=None, final=False):
+    """One run_results row per test per run; the live feed and the final junit
+    both write it, the junit having the last word on the result. `final` (the
+    junit) keeps the finish time the live feed saw, which is the real one."""
+    row = conn.execute("SELECT rowid, finished_at FROM run_results WHERE run_id=? AND node_id=?",
+                       (run_id, node_id)).fetchone()
+    if row:
+        finished = row["finished_at"] if final and row["finished_at"] else stamp
+        conn.execute("""UPDATE run_results SET outcome=?, duration=?, message=?, finished_at=?,
+                        started_at=COALESCE(started_at, ?) WHERE rowid=?""",
+                     (outcome, duration, message, finished, started_at, row["rowid"]))
+    else:
+        conn.execute("""INSERT INTO run_results (run_id, node_id, outcome, duration, message, started_at, finished_at)
+                        VALUES (?,?,?,?,?,?,?)""",
+                     (run_id, node_id, outcome, duration, message, started_at, stamp))
+
+
+def set_case_status(conn, case_id, run_id, status, stamp, source="automation"):
+    conn.execute("UPDATE cases SET status=?, last_run_id=?, last_run_at=?, updated_at=? WHERE id=?",
+                 (status, run_id, stamp, stamp, case_id))
+    if status == "Running":
+        return
+    last = conn.execute("SELECT status FROM case_history WHERE case_id=? AND run_id=? ORDER BY rowid DESC LIMIT 1",
+                        (case_id, run_id)).fetchone()
+    if not last or last["status"] != status:
+        conn.execute("INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
+                     (case_id, run_id, status, stamp, source))
+
+
+def recount_run(conn, run_id):
+    conn.execute(
+        """UPDATE runs SET
+             passed  = (SELECT COUNT(*) FROM run_results WHERE run_id=:r AND outcome='passed'),
+             failed  = (SELECT COUNT(*) FROM run_results WHERE run_id=:r AND outcome='failed'),
+             skipped = (SELECT COUNT(*) FROM run_results WHERE run_id=:r AND outcome='skipped'),
+             errors  = (SELECT COUNT(*) FROM run_results WHERE run_id=:r AND outcome='error')
+           WHERE id=:r""", {"r": run_id})
+
+
+def apply_live(run_id, events):
+    """Live events [(node_id, kind, outcome, duration, message, ts)] -> run_results,
+    automation_tests and the linked cases, while the run is still going."""
+    with db() as conn:
+        touched = set()
+        for node_id, kind, outcome, duration, message, ts in events:
+            at = ist_from_ts(ts) if ts else now()
+            row = conn.execute("SELECT rowid, outcome FROM run_results WHERE run_id=? AND node_id=?",
+                               (run_id, node_id)).fetchone()
+            if kind in ("start", "rerun"):
+                if not row:
+                    conn.execute("INSERT INTO run_results (run_id, node_id, outcome, started_at) VALUES (?,?,?,?)",
+                                 (run_id, node_id, "running", at))
+                # A finished row starting again is the next parametrize variant
+                # (or a rerun): back to running, unless it has already failed.
+                elif row["outcome"] in ("queued", "not run", "passed", "skipped") or kind == "rerun":
+                    conn.execute("""UPDATE run_results SET outcome='running', started_at=COALESCE(started_at, ?),
+                                    finished_at=NULL WHERE rowid=?""", (at, row["rowid"]))
+            else:
+                # Parametrized variants share one node: keep the worst outcome.
+                if row and row["outcome"] in OUTCOME_RANK and OUTCOME_RANK[row["outcome"]] > OUTCOME_RANK[outcome]:
+                    outcome = row["outcome"]
+                upsert_result(conn, run_id, node_id, outcome, duration, message, at, started_at=at)
+                conn.execute("""UPDATE automation_tests SET last_result=?, last_duration=?, last_message=?,
+                                last_run_id=?, last_run_at=? WHERE node_id=?""",
+                             (outcome, duration, message, run_id, at, node_id))
+            touched.add(node_id)
+        if not touched:
+            return
+        marks = ",".join("?" * len(touched))
+        case_ids = {r[0] for r in conn.execute(f"SELECT case_id FROM links WHERE node_id IN ({marks})", list(touched))}
+        stamp = now()
+        for case_id in case_ids:
+            outs = [r[0] for r in conn.execute(
+                """SELECT r.outcome FROM links l JOIN run_results r ON r.node_id = l.node_id AND r.run_id = ?
+                   WHERE l.case_id = ?""", (run_id, case_id))]
+            done = [o for o in outs if o in OUTCOME_RANK]
+            pending = [o for o in outs if o in ("queued", "running")]
+            if any(o in ("failed", "error") for o in done) or (done and not pending):
+                status = case_status_from(done)          # a failure shows straight away
+            elif "running" in outs or done:
+                status = "Running"
+            else:
+                continue
+            set_case_status(conn, case_id, run_id, status, stamp)
+        recount_run(conn, run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +465,8 @@ class Runner:
                 log_path = RUNS_DIR / f"run_{run_id}.log"
                 conn.execute("UPDATE runs SET log_path=? WHERE id=?", (str(log_path), run_id))
                 self._reset_cases(conn, ws_id, run_id, [t["node_id"] for t in tests])
+                conn.executemany("INSERT INTO run_results (run_id, node_id, outcome) VALUES (?,?,'queued')",
+                                 [(run_id, t["node_id"]) for t in tests])
 
             groups = {}
             for t in tests:
@@ -421,6 +508,15 @@ class Runner:
             with db() as conn:
                 conn.execute("UPDATE runs SET status=?, exit_code=?, finished_at=? WHERE id=?",
                              (status, max(exit_codes) if exit_codes else None, now(), run_id))
+                # Tests that never reported (cancelled, crashed, deselected).
+                conn.execute("""UPDATE run_results SET outcome='not run', finished_at=COALESCE(finished_at, ?)
+                                WHERE run_id=? AND outcome IN ('queued','running')""", (now(), run_id))
+                ws = conn.execute("SELECT workspace_id FROM runs WHERE id=?", (run_id,)).fetchone()[0]
+                conn.execute("UPDATE cases SET status='Not Run' WHERE workspace_id=? AND status='Running'", (ws,))
+            try:
+                write_report(run_id)
+            except Exception as exc:  # the run itself is recorded; a report problem must not hide that
+                print(f"[RUN {run_id}] report not written: {exc}")
             self.active, self.proc = False, None
             print(f"[RUN {run_id}] {status}; {updated} linked case(s) updated")
 
@@ -446,8 +542,9 @@ class Runner:
                   f"{len(tests)} test(s)\n$ {cmd}\n  (in {p['path']})\n\n")
         log.flush()
 
+        live_file = RUNS_DIR / f"run_{run_id}_p{project_id}.live.jsonl"
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", FORCE_COLOR="0",
-                   **frameworks.run_env(framework, junit))
+                   **frameworks.run_env(framework, junit, live_file))
         # CREATE_NO_WINDOW: never pop a console window for the run (output goes
         # to the run log). GUI windows -- the browser in headed mode -- still show.
         flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
@@ -456,7 +553,14 @@ class Runner:
         # user-editable template.
         self.proc = subprocess.Popen(cmd, shell=True, cwd=p["path"], stdout=log, stderr=subprocess.STDOUT,
                                      creationflags=flags, env=env)
-        code = self.proc.wait()
+        feed = LiveFeed(run_id, project_id, framework, live_file, Path(log.name))
+        while True:
+            try:
+                code = self.proc.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                feed.poll()
+        feed.poll()
         log.write(f"\n=== exit code {code}\n\n")
         log.flush()
 
@@ -485,7 +589,98 @@ class Runner:
             return True
 
 
+def build_report(run_id):
+    with db() as conn:
+        return report.build(conn, run_id, now())
+
+
+def write_report(run_id):
+    path = RUNS_DIR / f"run_{run_id}_report.html"
+    path.write_text(build_report(run_id), encoding="utf-8")
+    return path
+
+
+def live_progress(ws_id):
+    """The running run's progress for the Dashboard / Board strip, or None."""
+    if not RUNNER.busy():
+        return None
+    with db() as conn:
+        run = conn.execute("SELECT id, title, started_at, options FROM runs WHERE id=? AND workspace_id=?",
+                           (RUNNER.run_id, ws_id)).fetchone()
+        if not run:
+            return None
+        counts = {r["outcome"]: r["n"] for r in conn.execute(
+            "SELECT outcome, COUNT(*) n FROM run_results WHERE run_id=? GROUP BY outcome", (run["id"],))}
+        now_running = [r["name"] for r in conn.execute(
+            """SELECT COALESCE(a.name, r.node_id) name FROM run_results r
+               LEFT JOIN automation_tests a ON a.node_id = r.node_id
+               WHERE r.run_id=? AND r.outcome='running' ORDER BY r.started_at""", (run["id"],))]
+    total = sum(counts.values())
+    done = sum(counts.get(k, 0) for k in OUTCOME_RANK)
+    return {"id": run["id"], "title": run["title"], "started_at": run["started_at"], "total": total, "done": done,
+            "passed": counts.get("passed", 0), "failed": counts.get("failed", 0) + counts.get("error", 0),
+            "skipped": counts.get("skipped", 0), "now_running": now_running}
+
+
+class LiveFeed:
+    """Follows a running project's live output and records each test as it
+    starts and finishes: the pytest plugin's JSON lines, or -- for Playwright
+    JS -- the list reporter's result lines in the run log."""
+
+    def __init__(self, run_id, project_id, framework, live_file, log_path):
+        self.run_id, self.framework = run_id, framework
+        self.live_file, self.log_path = Path(live_file), Path(log_path)
+        self.live_pos = self.log_pos = 0
+        self.log_rest = ""
+        with db() as conn:
+            tests = rows(conn.execute(
+                "SELECT node_id, target, junit_key FROM automation_tests WHERE project_id=?", (project_id,)))
+        self.by_target = {t["target"].replace("\\", "/"): t["node_id"] for t in tests}
+        self.by_junit = {t["junit_key"]: t["node_id"] for t in tests}
+
+    def node_for(self, nodeid):
+        nodeid = re.sub(r"\[.*\]$", "", nodeid.replace("\\", "/"))     # parametrize ids
+        return self.by_target.get(nodeid)
+
+    def poll(self):
+        events = []
+        try:
+            if self.live_file.exists():
+                with open(self.live_file, "rb") as fh:
+                    fh.seek(self.live_pos)
+                    chunk = fh.read()
+                complete = chunk[:chunk.rfind(b"\n") + 1]       # leave a half-written line for next time
+                self.live_pos += len(complete)
+                for line in complete.decode("utf-8", errors="replace").splitlines():
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    node = self.node_for(e.get("nodeid", ""))
+                    if node:
+                        events.append((node, e["event"], e.get("outcome"), e.get("duration") or 0,
+                                       e.get("message") or "", e.get("t")))
+            if self.framework == "playwright-js" and self.log_path.exists():
+                with open(self.log_path, "rb") as fh:
+                    fh.seek(self.log_pos)
+                    chunk = fh.read()
+                self.log_pos += len(chunk)
+                text = self.log_rest + chunk.decode("utf-8", errors="replace")
+                lines = text.split("\n")
+                self.log_rest = lines.pop()
+                for line in lines:
+                    hit = frameworks.parse_live_line(self.framework, line.rstrip("\r"))
+                    if hit and hit[0] in self.by_junit:
+                        events.append((self.by_junit[hit[0]], "result", hit[1], 0, "", time.time()))
+            if events:
+                apply_live(self.run_id, events)
+        except (OSError, sqlite3.Error) as exc:
+            print(f"[RUN {self.run_id}] live update skipped: {exc}")
+
+
 RUNNER = Runner()
+
+SENT = object()   # a handler already wrote its own response (an HTML page)
 
 
 # ---------------------------------------------------------------------------
@@ -646,6 +841,7 @@ def summary(ws_id):
         "cases_linked": cases_linked, "auto_total": auto["total"], "auto_linked": auto["linked"] or 0,
         "recent_runs": runs, "suites": suites, "statuses": CASE_STATUSES, "priorities": PRIORITIES,
         "running": RUNNER.run_id if RUNNER.busy() else None,
+        "live": live_progress(ws_id),
         "frameworks": {k: v["label"] for k, v in frameworks.FRAMEWORKS.items()},
         "framework_commands": {k: v["command"] for k, v in frameworks.FRAMEWORKS.items()},
         "projects": [{"id": p["id"], "name": p["name"], "framework": p["framework"]} for p in list_projects(ws_id)],
@@ -785,6 +981,8 @@ class Handler(SimpleHTTPRequestHandler):
                     if parts == ["export"] and method == "GET":
                         return self.send_file(*export_file(q.get("format", "xlsx"), self.ws["id"], self.ws["key"]))
                     result = self.dispatch(method, parts, q)
+            if result is SENT:
+                return None
             if result is None:
                 return self.send_json({"error": "not found"}, 404)
             self.send_json(result)
@@ -800,6 +998,16 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Disposition", f'attachment; filename="{name}"')
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self, html, download=False, name="report.html"):
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Disposition", f'{"attachment" if download else "inline"}; filename="{name}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1105,6 +1313,10 @@ class Handler(SimpleHTTPRequestHandler):
                            LEFT JOIN projects p ON p.id = a.project_id
                            WHERE r.run_id=? ORDER BY r.rowid""", (run_id,)))
                     return run
+            if rest[1:] == ["report"] and method == "GET":
+                self.send_html(build_report(run_id), download=q.get("download") == "1",
+                               name=f"run_{run_id}_report.html")
+                return SENT
             if rest[1:] == ["log"] and method == "GET":
                 offset = int(q.get("offset", 0))
                 text = ""
