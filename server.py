@@ -928,7 +928,15 @@ class Handler(SimpleHTTPRequestHandler):
                 "tests": len(node_ids)}
 
     def run_cases(self, data):
+        """Run the automation linked to the given cases, or to every case in a module."""
         case_ids = data.get("case_ids") or []
+        if "module" in data:
+            with db() as conn:
+                case_ids = [r[0] for r in conn.execute(
+                    "SELECT id FROM cases WHERE module = ?", (data["module"] or "",))]
+            if not case_ids:
+                raise ValueError(f"Module '{data['module']}' has no test cases")
+            data.setdefault("title", f"Module -- {data['module'] or '(no module)'}")
         if not case_ids:
             raise ValueError("Select at least one test case")
         with db() as conn:
@@ -942,6 +950,22 @@ class Handler(SimpleHTTPRequestHandler):
         return {"run_id": RUNNER.start(title, node_ids, bool(data.get("headless")),
                                        data.get("region") or "Test", data.get("extra") or ""),
                 "tests": len(node_ids)}
+
+
+class SingleInstanceServer(ThreadingHTTPServer):
+    """Refuse to start when the port is taken.
+
+    HTTPServer sets SO_REUSEADDR, which on Windows lets a second server bind the
+    same port silently -- two copies then share requests and runs. Exclusive
+    binding makes the second copy fail fast instead.
+    """
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            import socket
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def main():
@@ -967,7 +991,12 @@ def main():
         print(f"[OK] run #{run_id} imported; {updated} linked case(s) updated")
         return
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        server = SingleInstanceServer(("127.0.0.1", args.port), Handler)
+    except OSError:
+        print(f"[ERROR] Port {args.port} is already in use -- the Test Case Manager is probably already "
+              f"running (open http://localhost:{args.port}), or use --port.")
+        return 1
     print(f"[OK] Test Case Manager running at http://localhost:{args.port}  (Ctrl+C to stop)")
     try:
         server.serve_forever()

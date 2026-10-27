@@ -20,6 +20,10 @@ nav button { background: none; border: 0; padding: 8px 14px; border-radius: 6px;
 nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
 #runBadge { margin-left: auto; font-size: 13px; color: var(--muted); }
 #runSuiteBtn:disabled { opacity: .5; }
+.nav-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.mod-run { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0 2px; font-size: 12px; opacity: .45; }
+.side a:hover .mod-run, .side a.on .mod-run, .mod-run:focus-visible { opacity: 1; }
+.run-mod { padding: 3px 10px; font-size: 12px; }
 .mode-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
 .mode { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 12px; border: 2px solid var(--line);
         border-radius: 10px; background: #fff; cursor: pointer; font: inherit; color: var(--ink); }
@@ -120,7 +124,7 @@ a.ide:hover { text-decoration: underline; }
     <div class="cards" id="cards"></div>
     <div class="panel">
       <h3 style="margin-top:0">Status by module</h3>
-      <table><thead><tr><th>Module</th><th>Total</th><th>Pass</th><th>Fail</th><th>Blocked/Skipped</th><th>Not Run</th><th style="width:30%">Progress</th></tr></thead>
+      <table><thead><tr><th>Module</th><th>Total</th><th>Pass</th><th>Fail</th><th>Blocked/Skipped</th><th>Not Run</th><th style="width:30%">Progress</th><th></th></tr></thead>
         <tbody id="moduleRows"></tbody></table>
     </div>
     <div class="panel">
@@ -395,9 +399,14 @@ const loadDashboard = guard(async () => {
   $("#moduleRows").innerHTML = s.modules.map(m => {
     const pct = v => (100 * v / (m.total || 1)).toFixed(1) + "%";
     return `<tr class="click" data-module="${esc(m.module)}"><td>${esc(m.module || "(none)")}</td><td>${m.total}</td><td>${m.pass}</td><td>${m.fail}</td><td>${m.blocked}</td><td>${m.notrun}</td>
-      <td><div class="bar"><span style="width:${pct(m.pass)};background:var(--pass)"></span><span style="width:${pct(m.fail)};background:var(--fail)"></span><span style="width:${pct(m.blocked)};background:var(--skip)"></span></div></td></tr>`;
-  }).join("") || `<tr><td colspan="7" class="muted">No test cases yet — create one, or open Automation and create cases from existing tests.</td></tr>`;
-  document.querySelectorAll("#moduleRows tr[data-module]").forEach(tr => tr.onclick = () => { $("#cmodule").value = tr.dataset.module; show("cases"); });
+      <td><div class="bar"><span style="width:${pct(m.pass)};background:var(--pass)"></span><span style="width:${pct(m.fail)};background:var(--fail)"></span><span style="width:${pct(m.blocked)};background:var(--skip)"></span></div></td>
+      <td style="text-align:right"><button class="btn run-mod" data-runmod="${esc(m.module)}" title="Run every automation test linked to this module">▶ Run</button></td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">No test cases yet — create one, or open Automation and create cases from existing tests.</td></tr>`;
+  document.querySelectorAll("#moduleRows tr[data-module]").forEach(tr => tr.onclick = e => {
+    if (e.target.closest("[data-runmod]")) return;
+    $("#cmodule").value = tr.dataset.module; show("cases");
+  });
+  document.querySelectorAll("#moduleRows [data-runmod]").forEach(b => b.onclick = () => askModuleRun(b.dataset.runmod));
   $("#recentRuns").innerHTML = runRowsHtml(s.recent_runs, true) || `<tr><td colspan="7" class="muted">No runs yet.</td></tr>`;
   bindRunRows("#recentRuns");
   hydrateFilters();
@@ -427,12 +436,22 @@ async function refreshMeta() { META = await api("summary"); hydrateFilters(); }
 function renderModuleNav() {
   const cur = $("#cmodule").value;
   const total = META.modules.reduce((n, m) => n + m.total, 0);
-  const item = (val, label, n) => `<a href="#" data-mod="${esc(val)}" class="${cur === val ? "on" : ""}"><span>${esc(label)}</span><span class="muted">${n}</span></a>`;
-  $("#moduleNav").innerHTML = item("", "All test cases", total) +
-    META.modules.map(m => item(m.module, m.module || "(no module)", m.total)).join("");
+  const item = (val, label, n, runnable) => `<a href="#" data-mod="${esc(val)}" class="${cur === val ? "on" : ""}"><span>${esc(label)}</span>
+      <span class="nav-right">${runnable ? `<button class="mod-run" data-runmod="${esc(val)}" title="Run this module">▶</button>` : ""}<span class="muted">${n}</span></span></a>`;
+  $("#moduleNav").innerHTML = item("", "All test cases", total, false) +
+    META.modules.map(m => item(m.module, m.module || "(no module)", m.total, true)).join("");
   $("#moduleNav").querySelectorAll("[data-mod]").forEach(a => a.onclick = e => {
-    e.preventDefault(); $("#cmodule").value = a.dataset.mod; loadCases();
+    e.preventDefault();
+    if (e.target.closest("[data-runmod]")) return askModuleRun(a.dataset.mod);
+    $("#cmodule").value = a.dataset.mod; loadCases();
   });
+}
+
+// Run every automation test linked to the cases of one module.
+function askModuleRun(module) {
+  const m = META.modules.find(x => x.module === module);
+  askRun({ module, title: `Module -- ${module || "(no module)"}` },
+         `Module "${module || "(no module)"}" — ${m ? m.total : "?"} test case(s). Every linked automation test runs; the cases update when it finishes.`);
 }
 
 // ---------------- cases
@@ -746,7 +765,7 @@ document.querySelectorAll("#runDlg .mode").forEach(b => b.onclick = guard(async 
   const opts = { region: $("#rRegion").value, headless, extra: $("#rExtra").value };
   const r = pendingRun.suite_mode
     ? await api("runs/suite", { method: "POST", body: { ...opts, project_id: $("#rProject").value || null, suite: $("#rSuite").value || null } })
-    : await api(pendingRun.case_ids ? "cases/run" : "runs", { method: "POST", body: { ...pendingRun, ...opts } });
+    : await api(pendingRun.case_ids || "module" in pendingRun ? "cases/run" : "runs", { method: "POST", body: { ...pendingRun, ...opts } });
   $("#runDlg").close();
   updateBadge(r.run_id);
   if (headless) {
