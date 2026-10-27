@@ -20,6 +20,13 @@ nav button { background: none; border: 0; padding: 8px 14px; border-radius: 6px;
 nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
 #runBadge { margin-left: auto; font-size: 13px; color: var(--muted); }
 #runSuiteBtn:disabled { opacity: .5; }
+.mode-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.mode { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 18px 12px; border: 2px solid var(--line);
+        border-radius: 10px; background: #fff; cursor: pointer; font: inherit; color: var(--ink); }
+.mode:hover { border-color: var(--accent); background: #f5f8fe; }
+.mode b { font-size: 16px; }
+.mode .muted { font-size: 12px; text-align: center; }
+.mode-ico { font-size: 26px; }
 #runBadge.live { color: var(--accent); font-weight: 600; cursor: pointer; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -261,13 +268,21 @@ a.ide:hover { text-decoration: underline; }
       <label class="f">Suite</label><select id="rSuite" style="width:100%"></select>
       <p class="muted" id="rCount" style="margin:6px 0 0"></p>
     </div>
-    <label class="f">Region</label>
-    <select id="rRegion"><option>Test</option><option>AP</option><option>ME</option><option>US</option><option>EU</option></select>
-    <label class="f"><input type="checkbox" id="rHeadless"> Headless (default is headed)</label>
-    <label class="f">Extra pytest args (optional)</label><input id="rExtra" placeholder="e.g. --reruns 1" style="width:100%">
-    <p class="muted" style="margin-bottom:0">Runs one at a time with a single worker. When it finishes, every linked test case is set to Pass / Fail / Skipped from the results.</p>
+    <div class="mode-pick">
+      <button class="mode" data-mode="headed">
+        <span class="mode-ico">🖥</span><b>Headed</b><span class="muted">Browser opens — watch the run</span>
+      </button>
+      <button class="mode" data-mode="headless">
+        <span class="mode-ico">⚡</span><b>Headless</b><span class="muted">Runs in the background — no windows</span>
+      </button>
+    </div>
+    <details style="margin-top:14px">
+      <summary class="muted" style="cursor:pointer">More options</summary>
+      <label class="f">Region</label>
+      <select id="rRegion"><option>Test</option><option>AP</option><option>ME</option><option>US</option><option>EU</option></select>
+      <label class="f">Extra args (optional)</label><input id="rExtra" placeholder="e.g. --reruns 1" style="width:100%">
+    </details>
   </div>
-  <div class="dlg-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="startRun">Start run</button></div>
 </dialog>
 
 <!-- Run detail -->
@@ -725,20 +740,37 @@ $("#rProject").onchange = () => fillSuites();
 $("#rSuite").onchange = countSuite;
 $("#runSuiteBtn").onclick = guard(() => askSuiteRun());
 
-$("#startRun").onclick = guard(async () => {
-  const opts = { region: $("#rRegion").value, headless: $("#rHeadless").checked, extra: $("#rExtra").value };
-  if (pendingRun.suite_mode) {
-    const r = await api("runs/suite", { method: "POST", body: { ...opts, project_id: $("#rProject").value || null, suite: $("#rSuite").value || null } });
-    $("#runDlg").close(); toast(`Run #${r.run_id} started — ${r.tests} test(s)`); updateBadge(r.run_id); openRun(r.run_id);
-    return;
-  }
-  const body = { ...pendingRun, ...opts };
-  const r = await api(body.case_ids ? "cases/run" : "runs", { method: "POST", body });
+// Choosing Headed / Headless starts the run straight away.
+document.querySelectorAll("#runDlg .mode").forEach(b => b.onclick = guard(async () => {
+  const headless = b.dataset.mode === "headless";
+  const opts = { region: $("#rRegion").value, headless, extra: $("#rExtra").value };
+  const r = pendingRun.suite_mode
+    ? await api("runs/suite", { method: "POST", body: { ...opts, project_id: $("#rProject").value || null, suite: $("#rSuite").value || null } })
+    : await api(pendingRun.case_ids ? "cases/run" : "runs", { method: "POST", body: { ...pendingRun, ...opts } });
   $("#runDlg").close();
-  toast(`Run #${r.run_id} started`);
   updateBadge(r.run_id);
-  openRun(r.run_id);
-});
+  if (headless) {
+    // Background run: no log window; the header badge tracks it and the
+    // results land on the cases when it finishes.
+    toast(`Run #${r.run_id} started in the background${r.tests ? ` — ${r.tests} test(s)` : ""}`);
+    watchRun(r.run_id);
+  } else {
+    toast(`Run #${r.run_id} started — the browser will open`);
+    openRun(r.run_id);
+  }
+}));
+
+// Background watcher for headless runs: tell the user when it is done.
+function watchRun(id) {
+  const h = setInterval(guard(async () => {
+    const run = await api("runs/" + id);
+    if (run.status === "Running") return;
+    clearInterval(h);
+    updateBadge(null);
+    toast(`Run #${id} ${run.status.toLowerCase()} — ✔ ${run.passed}  ✖ ${run.failed + run.errors}  ⤼ ${run.skipped}`, run.status !== "Passed");
+    refresh();
+  }), 3000);
+}
 
 const openRun = guard(async id => {
   clearInterval(runPoll);

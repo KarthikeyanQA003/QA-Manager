@@ -396,7 +396,9 @@ class Runner:
 
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8", FORCE_COLOR="0",
                    **frameworks.run_env(framework, junit))
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        # CREATE_NO_WINDOW: never pop a console window for the run (output goes
+        # to the run log). GUI windows -- the browser in headed mode -- still show.
+        flags = (subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW) if os.name == "nt" else 0
         started = time.time()
         # shell=True: npx / mvn are .cmd scripts on Windows, and the command is a
         # user-editable template.
