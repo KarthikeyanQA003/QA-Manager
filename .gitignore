@@ -1,0 +1,4 @@
+# Local data: SQLite database and run logs
+data/
+__pycache__/
+.venv/

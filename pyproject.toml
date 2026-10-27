@@ -1,0 +1,8 @@
+[project]
+name = "test-case-manager"
+version = "1.0.0"
+description = "Local test case management: link cases to automation in any framework, run them, track pass/fail"
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1",   # Excel export only; everything else is the standard library
+]

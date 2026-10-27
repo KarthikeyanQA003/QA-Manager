@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFlow Test Case Manager</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%232f6fde'/><path d='M4 8.5l2.5 2.5L12 5' stroke='white' stroke-width='2' fill='none'/></svg>">
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #fff; --ink: #1d2433; --muted: #6b7385; --line: #e3e6ec;
+  --accent: #2f6fde; --accent-ink: #fff;
+  --pass: #1f9d55; --fail: #d64545; --skip: #c98a00; --notrun: #8a92a3; --blocked: #8e5bd8;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; align-items: center; gap: 24px; padding: 0 20px; height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+nav { display: flex; gap: 4px; }
+nav button { background: none; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); font: inherit; }
+nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
+#runBadge { margin-left: auto; font-size: 13px; color: var(--muted); }
+#runBadge.live { color: var(--accent); font-weight: 600; cursor: pointer; }
+main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.toolbar .grow { flex: 1; }
+input, select, textarea { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); }
+textarea { width: 100%; min-height: 80px; resize: vertical; }
+button.btn { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+button.btn:hover { border-color: #c4cad6; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--fail); }
+button:disabled { opacity: .5; cursor: default; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; background: #fafbfc; position: sticky; top: 56px; }
+tr.click:hover td { background: #f7f9fd; cursor: pointer; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.muted { color: var(--muted); }
+.chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+.s-Pass, .s-passed { background: var(--pass); } .s-Fail, .s-failed, .s-error { background: var(--fail); }
+.s-Skipped, .s-skipped { background: var(--skip); } .s-Blocked { background: var(--blocked); }
+.s-NotRun, .s-none { background: var(--notrun); }
+.s-Running { background: var(--accent); } .s-Passed { background: var(--pass); } .s-Failed { background: var(--fail); }
+.s-Cancelled, .s-Aborted { background: var(--notrun); } .s-Imported { background: var(--blocked); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+.card .n { font-size: 26px; font-weight: 700; }
+.card .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #eceef2; min-width: 120px; }
+.bar span { display: block; height: 100%; }
+.hidden { display: none !important; }
+dialog { border: 0; border-radius: 10px; padding: 0; width: min(980px, 96vw); max-height: 92vh; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(20,25,35,.45); }
+.dlg-head { display: flex; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.dlg-head h2 { font-size: 16px; margin: 0; flex: 1; }
+.dlg-body { padding: 18px; overflow: auto; max-height: calc(92vh - 120px); }
+.dlg-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--line); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+label.f { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; }
+label.f + input, label.f + select { width: 100%; }
+.picker { border: 1px solid var(--line); border-radius: 6px; max-height: 260px; overflow: auto; }
+.picker div { padding: 6px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: flex-start; }
+.picker div:last-child { border-bottom: 0; }
+.linked-list .item { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+pre.log { background: #11151c; color: #d8dee9; padding: 12px; border-radius: 6px; max-height: 60vh; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin: 0; }
+#toast { position: fixed; bottom: 20px; right: 20px; background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+#toast.show { opacity: 1; }
+#toast.err { background: var(--fail); }
+.count { color: var(--muted); font-size: 13px; }
+a.ide { font-size: 12px; white-space: nowrap; text-decoration: none; color: var(--accent); }
+a.ide:hover { text-decoration: underline; }
+.split { display: grid; grid-template-columns: 230px 1fr; gap: 16px; align-items: start; }
+.side { position: sticky; top: 72px; max-height: calc(100vh - 90px); overflow: auto; }
+.side a { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: 6px; color: var(--ink); text-decoration: none; font-size: 13px; }
+.side a:hover { background: #f0f3f8; }
+.side a.on { background: #e8effc; color: var(--accent); font-weight: 600; }
+.board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; }
+.col { background: #eceff4; border-radius: 8px; padding: 8px; min-height: 200px; max-height: calc(100vh - 170px); overflow: auto; }
+.col.over { outline: 2px dashed var(--accent); }
+.col h4 { margin: 4px 4px 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; display: flex; justify-content: space-between; }
+.kcard { background: #fff; border-radius: 6px; padding: 9px 10px; margin-bottom: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.08); cursor: grab; font-size: 13px; }
+.kcard:hover { box-shadow: 0 2px 6px rgba(0,0,0,.14); }
+.kcard .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.kcard .meta .mono { white-space: nowrap; word-break: normal; font-size: 11px; }
+.side a span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+.prio-High { color: var(--fail); font-weight: 600; } .prio-Low { color: var(--muted); }
+.menu { position: relative; display: inline-block; }
+.menu-list { position: absolute; right: 0; top: 100%; margin-top: 4px; background: #fff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.12); z-index: 10; min-width: 160px; }
+.menu-list a { display: block; padding: 8px 12px; color: var(--ink); text-decoration: none; }
+.menu-list a:hover { background: #f0f3f8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CFlow Test Case Manager</h1>
+  <nav>
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="cases">Test Cases</button>
+    <button data-view="board">Board</button>
+    <button data-view="automation">Automation</button>
+    <button data-view="projects">Projects</button>
+    <button data-view="runs">Runs</button>
+  </nav>
+  <span id="runBadge"></span>
+</header>
+
+<main>
+  <!-- Dashboard -->
+  <section id="view-dashboard">
+    <div class="cards" id="cards"></div>
+    <div class="panel">
+      <h3 style="margin-top:0">Status by module</h3>
+      <table><thead><tr><th>Module</th><th>Total</th><th>Pass</th><th>Fail</th><th>Blocked/Skipped</th><th>Not Run</th><th style="width:30%">Progress</th></tr></thead>
+        <tbody id="moduleRows"></tbody></table>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0">Recent runs</h3>
+      <table><thead><tr><th>#</th><th>Title</th><th>Status</th><th>Pass</th><th>Fail</th><th>Skip</th><th>Started</th></tr></thead>
+        <tbody id="recentRuns"></tbody></table>
+    </div>
+  </section>
+
+  <!-- Test cases -->
+  <section id="view-cases" class="hidden">
+   <div class="split">
+    <div class="panel side"><div class="count" style="padding:0 10px 6px">MODULES</div><div id="moduleNav"></div></div>
+    <div class="panel">
+      <div class="toolbar">
+        <input id="cq" placeholder="Search title, steps, TC-0001…" class="grow">
+        <select id="cmodule" class="hidden"><option value="">All modules</option></select>
+        <select id="cstatus"><option value="">All statuses</option></select>
+        <select id="cpriority"><option value="">All priorities</option></select>
+        <select id="clinked"><option value="">Linked + unlinked</option><option value="yes">Linked to automation</option><option value="no">Not linked</option></select>
+        <button class="btn primary" id="newCase">+ New test case</button>
+      </div>
+      <div class="toolbar">
+        <span class="count" id="caseCount"></span>
+        <span class="grow"></span>
+        <button class="btn" id="importAll" title="Create one linked test case for every automation test that has none">⇪ Import all automation tests</button>
+        <span class="menu"><button class="btn" id="exportBtn">⇩ Export ▾</button>
+          <span class="menu-list hidden" id="exportMenu">
+            <a href="/api/export?format=xlsx">Excel (.xlsx)</a><a href="/api/export?format=csv">CSV (.csv)</a>
+            <div class="muted" style="padding:6px 12px 2px;font-size:11px;border-top:1px solid var(--line)">AS AUTOMATION PROJECT (.zip)</div>
+            <a href="/api/export?format=pw-py">Playwright Python</a>
+            <a href="/api/export?format=pw-js">Playwright JavaScript</a>
+            <a href="/api/export?format=selenium-java">Selenium Java (TestNG)</a>
+          </span></span>
+        <button class="btn" id="runSelectedCases" disabled>▶ Run selected (automation)</button>
+        <button class="btn" id="setStatusBtn" disabled>Set status…</button>
+      </div>
+      <table>
+        <thead><tr><th style="width:28px"><input type="checkbox" id="caseAll"></th><th>ID</th><th>Title</th><th>Module</th><th>Priority</th><th>Automation</th><th>Status</th><th>Last run</th></tr></thead>
+        <tbody id="caseRows"></tbody>
+      </table>
+    </div>
+   </div>
+  </section>
+
+  <!-- Board -->
+  <section id="view-board" class="hidden">
+    <div class="toolbar">
+      <input id="bq" placeholder="Filter cards…" style="width:260px">
+      <select id="bmodule"><option value="">All modules</option></select>
+      <span class="muted">Drag a card to another column to change its status.</span>
+    </div>
+    <div class="board" id="board"></div>
+  </section>
+
+  <!-- Automation -->
+  <section id="view-automation" class="hidden">
+    <div class="panel">
+      <div class="toolbar">
+        <input id="aq" placeholder="Search test name, id or description…" class="grow">
+        <select id="aproject"><option value="">All projects</option></select>
+        <select id="asuite"><option value="">All suites</option></select>
+        <select id="aresult"><option value="">Any result</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="error">Error</option><option value="skipped">Skipped</option><option value="none">Never run</option></select>
+        <select id="alinked"><option value="">Linked + unlinked</option><option value="no">No test case yet</option></select>
+        <button class="btn" id="syncBtn" title="Re-scan TestCases/ for added or renamed tests">⟳ Re-scan tests</button>
+      </div>
+      <div class="toolbar">
+        <span class="count" id="autoCount"></span>
+        <span class="grow"></span>
+        <button class="btn" id="genCases" disabled title="Create one test case per selected test that has none, linked to it">Create cases from selected</button>
+        <button class="btn primary" id="runSelectedAuto" disabled>▶ Run selected</button>
+      </div>
+      <table>
+        <thead><tr><th style="width:28px"><input type="checkbox" id="autoAll"></th><th>Project</th><th>Automation test</th><th>Markers</th><th>Linked cases</th><th>Last result</th><th>Last run</th></tr></thead>
+        <tbody id="autoRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Projects -->
+  <section id="view-projects" class="hidden">
+    <div class="panel">
+      <div class="toolbar">
+        <span class="muted grow">Connect your existing automation projects — Playwright JS/TS, Playwright Python, pytest, Selenium Java (Maven). Their tests are found automatically, can be linked to test cases, run from here, and open in your IDE.</span>
+        <button class="btn primary" id="newProject">+ Connect project</button>
+      </div>
+      <table><thead><tr><th>Project</th><th>Framework</th><th>Folder</th><th>Tests</th><th>Linked</th><th>Last scan</th><th></th></tr></thead>
+        <tbody id="projectRows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- Runs -->
+  <section id="view-runs" class="hidden">
+    <div class="panel">
+      <table><thead><tr><th>#</th><th>Title</th><th>Status</th><th>Tests</th><th>Pass</th><th>Fail</th><th>Skip</th><th>Started</th><th>Finished</th></tr></thead>
+        <tbody id="runRows"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<!-- Case editor -->
+<dialog id="caseDlg">
+  <div class="dlg-head"><h2 id="caseDlgTitle">New test case</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <label class="f">Title *</label><input id="fTitle" style="width:100%">
+    <div class="grid2">
+      <div><label class="f">Module</label><input id="fModule" list="moduleList"><datalist id="moduleList"></datalist></div>
+      <div><label class="f">Priority</label><select id="fPriority"></select></div>
+      <div><label class="f">Status</label><select id="fStatus"></select></div>
+    </div>
+    <label class="f">Preconditions</label><textarea id="fPre" style="min-height:50px"></textarea>
+    <label class="f">Steps</label><textarea id="fSteps"></textarea>
+    <label class="f">Expected result</label><textarea id="fExpected" style="min-height:60px"></textarea>
+    <label class="f">Notes</label><textarea id="fNotes" style="min-height:50px"></textarea>
+
+    <label class="f">Linked automation tests <span class="muted" style="font-weight:400">— a run of any of these updates this case</span></label>
+    <div class="linked-list" id="linkedList"></div>
+    <div class="toolbar" style="margin-top:8px">
+      <input id="pickQ" placeholder="Search automation tests to link…" class="grow">
+      <select id="pickSuite"><option value="">All suites</option></select>
+    </div>
+    <div class="picker" id="picker"></div>
+
+    <div id="historyWrap" class="hidden">
+      <label class="f">History</label>
+      <table><thead><tr><th>When</th><th>Status</th><th>Source</th><th>Run</th></tr></thead><tbody id="historyRows"></tbody></table>
+    </div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn danger" id="deleteCase">Delete</button>
+    <span style="flex:1"></span>
+    <button class="btn" id="runThisCase">▶ Run automation</button>
+    <button class="btn" data-close>Cancel</button>
+    <button class="btn primary" id="saveCase">Save</button>
+  </div>
+</dialog>
+
+<!-- Run options -->
+<dialog id="runDlg" style="width:min(520px,96vw)">
+  <div class="dlg-head"><h2>Run automation</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <p id="runSummary" style="margin-top:0"></p>
+    <label class="f">Region</label>
+    <select id="rRegion"><option>Test</option><option>AP</option><option>ME</option><option>US</option><option>EU</option></select>
+    <label class="f"><input type="checkbox" id="rHeadless"> Headless (default is headed)</label>
+    <label class="f">Extra pytest args (optional)</label><input id="rExtra" placeholder="e.g. --reruns 1" style="width:100%">
+    <p class="muted" style="margin-bottom:0">Runs one at a time with a single worker. When it finishes, every linked test case is set to Pass / Fail / Skipped from the results.</p>
+  </div>
+  <div class="dlg-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="startRun">Start run</button></div>
+</dialog>
+
+<!-- Run detail -->
+<dialog id="runDetailDlg" style="width:min(1200px,96vw)">
+  <div class="dlg-head"><h2 id="rdTitle">Run</h2><button class="btn danger hidden" id="cancelRun">Stop run</button>&nbsp;<button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <div id="rdMeta" class="toolbar"></div>
+    <div id="rdResultsWrap" class="hidden" style="margin-bottom:12px">
+      <table><thead><tr><th>Automation test</th><th>Result</th><th>Duration</th><th>Updated cases</th><th>Message</th></tr></thead><tbody id="rdResults"></tbody></table>
+    </div>
+    <pre class="log" id="rdLog"></pre>
+  </div>
+</dialog>
+
+<!-- Project editor -->
+<dialog id="projDlg" style="width:min(680px,96vw)">
+  <div class="dlg-head"><h2 id="projDlgTitle">Connect project</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body">
+    <label class="f">Project name *</label><input id="pName" style="width:100%" placeholder="e.g. Web regression (Playwright JS)">
+    <label class="f">Framework *</label><select id="pFramework" style="width:100%"></select>
+    <label class="f">Project folder (absolute path) *</label>
+    <input id="pPath" style="width:100%" class="mono" placeholder="D:\Automation\web-tests">
+    <div class="muted" style="font-size:12px;margin-top:4px">Tip: in VS Code, right-click the project folder → <b>Copy Path</b> and paste it here.</div>
+    <label class="f">Scan only this sub-folder (optional)</label>
+    <input id="pScanDir" style="width:100%" class="mono" placeholder="e.g. tests   (Selenium default: src/test/java)">
+    <label class="f">Run command (optional — leave empty for the default)</label>
+    <textarea id="pCommand" class="mono" style="min-height:60px"></textarea>
+    <div class="muted" style="font-size:12px">Placeholders: <span class="mono">{targets}</span> selected tests ·
+      <span class="mono">{junit}</span> results file · <span class="mono">{headed}</span> / <span class="mono">{headless}</span> / <span class="mono">{headless_bool}</span> · <span class="mono">{region}</span>.
+      Runs in the project folder. Default: <span class="mono" id="pDefault"></span></div>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn danger" id="deleteProject">Disconnect</button><span style="flex:1"></span>
+    <button class="btn" data-close>Cancel</button><button class="btn primary" id="saveProject">Save &amp; scan</button>
+  </div>
+</dialog>
+
+<!-- Bulk status -->
+<dialog id="statusDlg" style="width:min(380px,96vw)">
+  <div class="dlg-head"><h2>Set status</h2><button class="btn" data-close>✕</button></div>
+  <div class="dlg-body"><select id="bulkStatus" style="width:100%"></select></div>
+  <div class="dlg-foot"><button class="btn" data-close>Cancel</button><button class="btn primary" id="applyStatus">Apply</button></div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const tcId = id => "TC-" + String(id).padStart(4, "0");
+const chip = (s, label) => `<span class="chip s-${esc((s || "none").replace(/\s/g, ""))}">${esc(label || s || "—")}</span>`;
+const shortNode = n => n.replace(/^TestCases\//, "");
+// Opens the file at the line in VS Code (vscode:// URL handler).
+// root: the folder of the project the test belongs to.
+const ideUrl = (file, line, root) => `vscode://file/${encodeURI(String(root).replace(/\\/g, "/") + "/" + file)}${line ? ":" + line : ""}`;
+const ide = (file, line, root) => root && file ? `<a class="ide" href="${ideUrl(file, line, root)}" title="Open in VS Code">⧉ Open in IDE</a>` : "";
+
+let META = { statuses: [], priorities: [], suites: [] };
+let selectedCases = new Set(), selectedAuto = new Set();
+let editing = null, editLinks = [], pendingRun = null, runPoll = null;
+
+async function api(path, opts = {}) {
+  const method = opts.method || "GET";
+  // Writes are always JSON -- the server refuses anything else (CSRF guard).
+  const res = await fetch("/api/" + path, {
+    method,
+    headers: method === "GET" ? {} : { "Content-Type": "application/json" },
+    body: method === "GET" ? undefined : JSON.stringify(opts.body || {}),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+function toast(msg, err) {
+  const t = $("#toast"); t.textContent = msg; t.className = "show" + (err ? " err" : "");
+  clearTimeout(t._h); t._h = setTimeout(() => t.className = "", 3500);
+}
+const guard = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+const debounce = (fn, ms = 250) => { let h; return (...a) => { clearTimeout(h); h = setTimeout(() => fn(...a), ms); }; };
+function fillSelect(sel, values, keepFirst = true) {
+  const first = keepFirst ? sel.options[0]?.outerHTML || "" : "";
+  sel.innerHTML = first + values.map(v => `<option>${esc(v)}</option>`).join("");
+}
+
+// ---------------- navigation
+let currentView = "dashboard";
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.view));
+function show(view) {
+  currentView = view;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "view-" + view));
+  ({ dashboard: loadDashboard, cases: loadCases, board: loadBoard, automation: loadAuto, projects: loadProjects, runs: loadRuns })[view]();
+}
+document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
+
+// ---------------- dashboard
+const loadDashboard = guard(async () => {
+  const s = await api("summary");
+  META = s;
+  updateBadge(s.running);
+  const st = s.by_status;
+  const card = (n, l, color) => `<div class="card"><div class="n" style="color:${color || "inherit"}">${n}</div><div class="l">${l}</div></div>`;
+  $("#cards").innerHTML =
+    card(s.cases_total, "Test cases") +
+    card(st.Pass || 0, "Pass", "var(--pass)") + card(st.Fail || 0, "Fail", "var(--fail)") +
+    card((st.Blocked || 0) + (st.Skipped || 0), "Blocked / skipped", "var(--skip)") +
+    card(st["Not Run"] || 0, "Not run", "var(--notrun)") +
+    card(`${s.cases_linked}/${s.cases_total}`, "Cases automated") +
+    card(`${s.auto_linked}/${s.auto_total}`, "Automation tests linked");
+  $("#moduleRows").innerHTML = s.modules.map(m => {
+    const pct = v => (100 * v / (m.total || 1)).toFixed(1) + "%";
+    return `<tr class="click" data-module="${esc(m.module)}"><td>${esc(m.module || "(none)")}</td><td>${m.total}</td><td>${m.pass}</td><td>${m.fail}</td><td>${m.blocked}</td><td>${m.notrun}</td>
+      <td><div class="bar"><span style="width:${pct(m.pass)};background:var(--pass)"></span><span style="width:${pct(m.fail)};background:var(--fail)"></span><span style="width:${pct(m.blocked)};background:var(--skip)"></span></div></td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="muted">No test cases yet — create one, or open Automation and create cases from existing tests.</td></tr>`;
+  document.querySelectorAll("#moduleRows tr[data-module]").forEach(tr => tr.onclick = () => { $("#cmodule").value = tr.dataset.module; show("cases"); });
+  $("#recentRuns").innerHTML = runRowsHtml(s.recent_runs, true) || `<tr><td colspan="7" class="muted">No runs yet.</td></tr>`;
+  bindRunRows("#recentRuns");
+  hydrateFilters();
+});
+
+function hydrateFilters() {
+  fillSelect($("#cstatus"), META.statuses);
+  fillSelect($("#cpriority"), META.priorities);
+  fillSelect($("#asuite"), META.suites);
+  fillSelect($("#pickSuite"), META.suites);
+  fillSelect($("#fStatus"), META.statuses, false);
+  fillSelect($("#fPriority"), META.priorities, false);
+  fillSelect($("#bulkStatus"), META.statuses, false);
+  const mods = [...new Set([...META.suites, ...META.modules.map(m => m.module).filter(Boolean)])].sort();
+  const keep = $("#cmodule").value;
+  fillSelect($("#cmodule"), mods); $("#cmodule").value = keep;
+  const pkeep = $("#aproject").value;
+  $("#aproject").innerHTML = `<option value="">All projects</option>` +
+    (META.projects || []).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  $("#aproject").value = pkeep;
+  const bkeep = $("#bmodule").value;
+  fillSelect($("#bmodule"), mods); $("#bmodule").value = bkeep;
+  $("#moduleList").innerHTML = mods.map(m => `<option value="${esc(m)}">`).join("");
+}
+async function refreshMeta() { META = await api("summary"); hydrateFilters(); }
+
+function renderModuleNav() {
+  const cur = $("#cmodule").value;
+  const total = META.modules.reduce((n, m) => n + m.total, 0);
+  const item = (val, label, n) => `<a href="#" data-mod="${esc(val)}" class="${cur === val ? "on" : ""}"><span>${esc(label)}</span><span class="muted">${n}</span></a>`;
+  $("#moduleNav").innerHTML = item("", "All test cases", total) +
+    META.modules.map(m => item(m.module, m.module || "(no module)", m.total)).join("");
+  $("#moduleNav").querySelectorAll("[data-mod]").forEach(a => a.onclick = e => {
+    e.preventDefault(); $("#cmodule").value = a.dataset.mod; loadCases();
+  });
+}
+
+// ---------------- cases
+const loadCases = guard(async () => {
+  await refreshMeta();
+  renderModuleNav();
+  const p = new URLSearchParams({ q: $("#cq").value, module: $("#cmodule").value, status: $("#cstatus").value,
+                                  priority: $("#cpriority").value, linked: $("#clinked").value });
+  const list = await api("cases?" + p);
+  $("#caseCount").textContent = `${list.length} case(s)`;
+  selectedCases = new Set([...selectedCases].filter(id => list.some(c => c.id === id)));
+  $("#caseRows").innerHTML = list.map(c => `<tr class="click" data-id="${c.id}">
+      <td><input type="checkbox" data-sel="${c.id}" ${selectedCases.has(c.id) ? "checked" : ""}></td>
+      <td class="mono">${tcId(c.id)}</td><td>${esc(c.title)}</td><td>${esc(c.module)}</td><td>${esc(c.priority)}</td>
+      <td>${c.link_count ? `⚙ ${c.link_count} test${c.link_count > 1 ? "s" : ""}` : '<span class="muted">Manual</span>'}</td>
+      <td>${chip(c.status)}</td><td class="muted">${esc(c.last_run_at || "")}${c.last_run_id ? ` · <a href="#" data-run="${c.last_run_id}">#${c.last_run_id}</a>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="8" class="muted">No matching test cases.</td></tr>`;
+  document.querySelectorAll("#caseRows tr[data-id]").forEach(tr => tr.onclick = e => {
+    if (e.target.dataset.sel) return;
+    if (e.target.dataset.run) { e.preventDefault(); return openRun(+e.target.dataset.run); }
+    openCase(+tr.dataset.id);
+  });
+  document.querySelectorAll("#caseRows [data-sel]").forEach(cb => cb.onchange = () => {
+    cb.checked ? selectedCases.add(+cb.dataset.sel) : selectedCases.delete(+cb.dataset.sel); syncCaseButtons();
+  });
+  $("#caseAll").checked = list.length && list.every(c => selectedCases.has(c.id));
+  $("#caseAll").onchange = () => { list.forEach(c => $("#caseAll").checked ? selectedCases.add(c.id) : selectedCases.delete(c.id)); loadCases(); };
+  syncCaseButtons();
+});
+function syncCaseButtons() {
+  $("#runSelectedCases").disabled = $("#setStatusBtn").disabled = !selectedCases.size;
+  $("#runSelectedCases").textContent = `▶ Run selected (${selectedCases.size})`;
+}
+["#cq"].forEach(s => $(s).oninput = debounce(loadCases));
+["#cmodule", "#cstatus", "#cpriority", "#clinked"].forEach(s => $(s).onchange = loadCases);
+$("#newCase").onclick = () => openCase(null);
+$("#exportBtn").onclick = e => { e.stopPropagation(); $("#exportMenu").classList.toggle("hidden"); };
+document.addEventListener("click", () => $("#exportMenu").classList.add("hidden"));
+$("#importAll").onclick = guard(async () => {
+  if (!confirm("Create a linked test case for every automation test that doesn't have one yet?")) return;
+  const r = await api("cases/generate", { method: "POST", body: {} });
+  toast(r.created ? `${r.created} test case(s) imported from automation` : "Every automation test already has a test case");
+  loadCases();
+});
+
+// ---------------- board
+const loadBoard = guard(async () => {
+  await refreshMeta();
+  const p = new URLSearchParams({ q: $("#bq").value, module: $("#bmodule").value });
+  const list = await api("cases?" + p);
+  $("#board").innerHTML = META.statuses.map(s => {
+    const cards = list.filter(c => c.status === s);
+    return `<div class="col" data-status="${esc(s)}"><h4><span>${chip(s)}</span><span class="muted">${cards.length}</span></h4>
+      ${cards.slice(0, 300).map(c => `<div class="kcard" draggable="true" data-id="${c.id}">
+          <div>${esc(c.title)}</div>
+          <div class="meta"><span class="mono">${tcId(c.id)}</span><span>${esc(c.module || "")}</span>
+            <span class="prio-${esc(c.priority)}">${esc(c.priority)}</span>${c.link_count ? "<span title='automated'>⚙</span>" : ""}</div>
+        </div>`).join("")}
+      ${cards.length > 300 ? `<div class="muted" style="padding:6px">+${cards.length - 300} more — filter to see them</div>` : ""}</div>`;
+  }).join("");
+  document.querySelectorAll(".kcard").forEach(k => {
+    k.ondragstart = e => e.dataTransfer.setData("text/plain", k.dataset.id);
+    k.onclick = () => openCase(+k.dataset.id);
+  });
+  document.querySelectorAll(".col").forEach(col => {
+    col.ondragover = e => { e.preventDefault(); col.classList.add("over"); };
+    col.ondragleave = () => col.classList.remove("over");
+    col.ondrop = guard(async e => {
+      e.preventDefault(); col.classList.remove("over");
+      const id = +e.dataTransfer.getData("text/plain");
+      await api("cases/" + id, { method: "PUT", body: { status: col.dataset.status } });
+      toast(`${tcId(id)} → ${col.dataset.status}`); loadBoard();
+    });
+  });
+});
+$("#bq").oninput = debounce(loadBoard);
+$("#bmodule").onchange = loadBoard;
+$("#runSelectedCases").onclick = () => askRun({ case_ids: [...selectedCases] }, `${selectedCases.size} selected test case(s) — all linked automation tests will run.`);
+$("#setStatusBtn").onclick = () => $("#statusDlg").showModal();
+$("#applyStatus").onclick = guard(async () => {
+  const status = $("#bulkStatus").value;
+  await Promise.all([...selectedCases].map(id => api("cases/" + id, { method: "PUT", body: { status } })));
+  $("#statusDlg").close(); toast(`${selectedCases.size} case(s) set to ${status}`); loadCases();
+});
+
+// ---------------- case editor
+const openCase = guard(async id => {
+  editing = id;
+  const c = id ? await api("cases/" + id) : { title: "", module: $("#cmodule").value, priority: "Medium", status: "Not Run", links: [], history: [] };
+  if (!META.statuses.length) await loadDashboard();
+  $("#caseDlgTitle").textContent = id ? `${tcId(id)} — edit test case` : "New test case";
+  $("#fTitle").value = c.title; $("#fModule").value = c.module || "";
+  $("#fPriority").value = c.priority; $("#fStatus").value = c.status;
+  $("#fPre").value = c.preconditions || ""; $("#fSteps").value = c.steps || "";
+  $("#fExpected").value = c.expected || ""; $("#fNotes").value = c.notes || "";
+  editLinks = c.links.map(l => ({ ...l }));
+  renderLinks();
+  $("#deleteCase").classList.toggle("hidden", !id);
+  $("#runThisCase").classList.toggle("hidden", !id);
+  $("#historyWrap").classList.toggle("hidden", !c.history.length);
+  $("#historyRows").innerHTML = c.history.map(h => `<tr><td>${esc(h.at)}</td><td>${chip(h.status)}</td><td>${esc(h.source)}</td><td>${h.run_id ? `<a href="#" data-run="${h.run_id}">#${h.run_id}</a>` : ""}</td></tr>`).join("");
+  $("#historyRows").querySelectorAll("[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); openRun(+a.dataset.run); });
+  $("#pickQ").value = ""; $("#pickSuite").value = c.module && META.suites.includes(c.module) ? c.module : "";
+  await loadPicker();
+  $("#caseDlg").showModal();
+  $("#fTitle").focus();
+});
+function renderLinks() {
+  $("#linkedList").innerHTML = editLinks.map((l, i) => `<div class="item">
+      ${chip(l.last_result, l.last_result || "never run")}
+      <span class="mono" style="flex:1">${esc(shortNode(l.node_id))}${l.present === 0 ? ' <b style="color:var(--fail)">(test removed)</b>' : ""}</span>
+      ${l.project ? `<span class="muted">${esc(l.project)}</span>` : ""}
+      ${ide(l.file, l.line, l.root)}
+      <button class="btn" data-unlink="${i}">Unlink</button></div>`).join("") || `<div class="muted">Not linked — this is a manual test case.</div>`;
+  $("#linkedList").querySelectorAll("[data-unlink]").forEach(b => b.onclick = () => { editLinks.splice(+b.dataset.unlink, 1); renderLinks(); loadPicker(); });
+}
+const loadPicker = guard(async () => {
+  const p = new URLSearchParams({ q: $("#pickQ").value, suite: $("#pickSuite").value });
+  const list = (await api("automation?" + p)).slice(0, 200);
+  const linked = new Set(editLinks.map(l => l.node_id));
+  $("#picker").innerHTML = list.map(t => `<div>
+      <input type="checkbox" data-node="${esc(t.node_id)}" ${linked.has(t.node_id) ? "checked" : ""}>
+      <span style="flex:1"><span class="mono">${esc(shortNode(t.node_id))}</span>${t.doc ? `<br><span class="muted">${esc(t.doc.split("\n")[0])}</span>` : ""}</span>
+      ${t.case_ids ? `<span class="muted" title="already linked to">${t.case_ids.split(",").map(tcId).join(", ")}</span>` : ""}
+      ${ide(t.file, t.line, t.root)}
+    </div>`).join("") || `<div class="muted">No automation tests match.</div>`;
+  $("#picker").querySelectorAll("[data-node]").forEach(cb => cb.onchange = () => {
+    const t = list.find(x => x.node_id === cb.dataset.node);
+    if (cb.checked) editLinks.push(t); else editLinks = editLinks.filter(l => l.node_id !== t.node_id);
+    renderLinks();
+  });
+});
+$("#pickQ").oninput = debounce(loadPicker);
+$("#pickSuite").onchange = loadPicker;
+$("#saveCase").onclick = guard(async () => {
+  const body = { title: $("#fTitle").value, module: $("#fModule").value, priority: $("#fPriority").value,
+                 status: $("#fStatus").value, preconditions: $("#fPre").value, steps: $("#fSteps").value,
+                 expected: $("#fExpected").value, notes: $("#fNotes").value, node_ids: editLinks.map(l => l.node_id) };
+  if (!body.title.trim()) throw new Error("Title is required");
+  const c = await api(editing ? "cases/" + editing : "cases", { method: editing ? "PUT" : "POST", body });
+  $("#caseDlg").close(); toast(`${tcId(c.id)} saved`); refresh();
+});
+$("#deleteCase").onclick = guard(async () => {
+  if (!confirm(`Delete ${tcId(editing)}? This cannot be undone.`)) return;
+  await api("cases/" + editing, { method: "DELETE" });
+  $("#caseDlg").close(); toast(`${tcId(editing)} deleted`); refresh();
+});
+$("#runThisCase").onclick = () => {
+  if (!editLinks.length) return toast("Link an automation test first", true);
+  $("#caseDlg").close();
+  askRun({ case_ids: [editing], title: tcId(editing) }, `${tcId(editing)} — ${editLinks.length} linked automation test(s). Save first if you changed the links.`);
+};
+
+// ---------------- automation
+let autoList = [];
+const loadAuto = guard(async () => {
+  if (!META.projects) await refreshMeta();
+  const p = new URLSearchParams({ q: $("#aq").value, project: $("#aproject").value, suite: $("#asuite").value, result: $("#aresult").value, linked: $("#alinked").value });
+  autoList = await api("automation?" + p);
+  $("#autoCount").textContent = `${autoList.length} automation test(s)`;
+  selectedAuto = new Set([...selectedAuto].filter(n => autoList.some(t => t.node_id === n)));
+  $("#autoRows").innerHTML = autoList.map(t => `<tr>
+      <td><input type="checkbox" data-sel="${esc(t.node_id)}" ${selectedAuto.has(t.node_id) ? "checked" : ""}></td>
+      <td>${esc(t.project)}<br><span class="muted" style="font-size:12px">${esc(META.frameworks?.[t.framework] || t.framework)}</span></td>
+      <td><span class="mono">${esc(t.file.split("/").pop())}${t.cls ? " :: " + esc(t.cls) : ""} :: <b>${esc(t.name)}</b></span> ${ide(t.file, t.line, t.root)}${t.doc ? `<br><span class="muted">${esc(t.doc.split("\n")[0])}</span>` : ""}</td>
+      <td class="muted">${esc(t.markers)}</td>
+      <td>${t.case_ids ? t.case_ids.split(",").map(id => `<a href="#" data-case="${id}">${tcId(id)}</a>`).join(" ") : '<span class="muted">—</span>'}</td>
+      <td>${chip(t.last_result, t.last_result || "never run")}</td>
+      <td class="muted">${esc(t.last_run_at || "")}${t.last_run_id ? ` · <a href="#" data-run="${t.last_run_id}">#${t.last_run_id}</a>` : ""}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="muted">No automation tests match.</td></tr>`;
+  $("#autoRows").querySelectorAll("[data-sel]").forEach(cb => cb.onchange = () => {
+    cb.checked ? selectedAuto.add(cb.dataset.sel) : selectedAuto.delete(cb.dataset.sel); syncAutoButtons();
+  });
+  $("#autoRows").querySelectorAll("[data-case]").forEach(a => a.onclick = e => { e.preventDefault(); openCase(+a.dataset.case); });
+  $("#autoRows").querySelectorAll("[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); openRun(+a.dataset.run); });
+  $("#autoAll").checked = autoList.length && autoList.every(t => selectedAuto.has(t.node_id));
+  $("#autoAll").onchange = () => { autoList.forEach(t => $("#autoAll").checked ? selectedAuto.add(t.node_id) : selectedAuto.delete(t.node_id)); loadAuto(); };
+  syncAutoButtons();
+});
+function syncAutoButtons() {
+  $("#runSelectedAuto").disabled = $("#genCases").disabled = !selectedAuto.size;
+  $("#runSelectedAuto").textContent = `▶ Run selected (${selectedAuto.size})`;
+}
+$("#aq").oninput = debounce(loadAuto);
+["#aproject", "#asuite", "#aresult", "#alinked"].forEach(s => $(s).onchange = loadAuto);
+$("#syncBtn").onclick = guard(async () => { const r = await api("automation/sync", { method: "POST" }); toast(`${r.count} automation tests found`); loadAuto(); });
+$("#genCases").onclick = guard(async () => {
+  const r = await api("cases/generate", { method: "POST", body: { node_ids: [...selectedAuto] } });
+  toast(r.created ? `${r.created} test case(s) created and linked` : "All selected tests already have a test case");
+  loadAuto();
+});
+$("#runSelectedAuto").onclick = () => {
+  const ids = [...selectedAuto];
+  const suites = [...new Set(autoList.filter(t => selectedAuto.has(t.node_id)).map(t => t.suite))];
+  askRun({ node_ids: ids, title: suites.length === 1 ? `${suites[0]} (${ids.length})` : `${ids.length} automation test(s)` },
+         `${ids.length} automation test(s) from ${suites.join(", ")}.`);
+};
+
+// ---------------- projects
+let projects = [], editingProject = null;
+const loadProjects = guard(async () => {
+  await refreshMeta();
+  projects = await api("projects");
+  $("#projectRows").innerHTML = projects.map(p => `<tr>
+      <td><b>${esc(p.name)}</b></td>
+      <td>${esc(p.label)}</td>
+      <td class="mono">${esc(p.path)}${p.scan_dir ? `<span class="muted"> / ${esc(p.scan_dir)}</span>` : ""}
+        ${p.exists ? ` <a class="ide" href="vscode://file/${encodeURI(p.path.replace(/\\/g, "/"))}">⧉ Open in IDE</a>` : ' <b style="color:var(--fail)">folder missing</b>'}</td>
+      <td>${p.tests}</td><td>${p.linked}/${p.tests}</td>
+      <td class="muted">${esc(p.last_scan_at || "never")}</td>
+      <td style="white-space:nowrap">
+        <button class="btn" data-scan="${p.id}">⟳ Scan</button>
+        <button class="btn" data-import="${p.id}" title="Create a linked test case for each test that has none">⇪ Import as cases</button>
+        <button class="btn" data-tests="${p.id}">Tests</button>
+        <button class="btn" data-edit="${p.id}">Edit</button></td></tr>`).join("");
+  const on = (attr, fn) => $("#projectRows").querySelectorAll(`[data-${attr}]`).forEach(b => b.onclick = guard(() => fn(+b.dataset[attr])));
+  on("scan", async id => { const r = await api(`projects/${id}/scan`, { method: "POST" }); toast(`${r.tests} test(s) found`); loadProjects(); });
+  on("import", async id => {
+    const r = await api("cases/generate", { method: "POST", body: { project_id: id } });
+    toast(r.created ? `${r.created} test case(s) created and linked` : "Every test in this project already has a case"); loadProjects();
+  });
+  on("tests", async id => { $("#aproject").value = id; show("automation"); });
+  on("edit", async id => openProject(projects.find(p => p.id === id)));
+});
+function openProject(p) {
+  editingProject = p ? p.id : null;
+  $("#projDlgTitle").textContent = p ? `Edit — ${p.name}` : "Connect project";
+  $("#pFramework").innerHTML = Object.entries(META.frameworks).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#pName").value = p?.name || ""; $("#pFramework").value = p?.framework || "playwright-js";
+  $("#pPath").value = p?.path || ""; $("#pScanDir").value = p?.scan_dir || ""; $("#pCommand").value = p?.command || "";
+  $("#deleteProject").classList.toggle("hidden", !p || p.id === 1);
+  showDefaultCmd();
+  $("#projDlg").showModal();
+}
+function showDefaultCmd() {
+  $("#pDefault").textContent = META.framework_commands?.[$("#pFramework").value] || "";
+}
+$("#pFramework").onchange = showDefaultCmd;
+$("#newProject").onclick = () => openProject(null);
+$("#saveProject").onclick = guard(async () => {
+  const body = { name: $("#pName").value, framework: $("#pFramework").value, path: $("#pPath").value,
+                 scan_dir: $("#pScanDir").value, command: $("#pCommand").value };
+  const r = await api(editingProject ? "projects/" + editingProject : "projects", { method: editingProject ? "PUT" : "POST", body });
+  $("#projDlg").close(); toast(`Connected — ${r.tests} test(s) found`); loadProjects();
+});
+$("#deleteProject").onclick = guard(async () => {
+  if (!confirm("Disconnect this project? Its tests are removed from the tool and unlinked from test cases (the cases themselves are kept).")) return;
+  await api("projects/" + editingProject, { method: "DELETE" });
+  $("#projDlg").close(); toast("Project disconnected"); loadProjects();
+});
+
+// ---------------- runs
+function runRowsHtml(list, compact) {
+  return list.map(r => {
+    const n = (() => { try { return JSON.parse(r.targets || "[]").length; } catch { return ""; } })();
+    return `<tr class="click" data-run="${r.id}"><td>#${r.id}</td><td>${esc(r.title)}</td><td>${chip(r.status)}</td>
+      ${compact ? "" : `<td>${n || ""}</td>`}<td>${r.passed}</td><td>${r.failed + r.errors}</td><td>${r.skipped}</td>
+      <td class="muted">${esc(r.started_at)}</td>${compact ? "" : `<td class="muted">${esc(r.finished_at || "")}</td>`}</tr>`;
+  }).join("");
+}
+function bindRunRows(sel) { document.querySelectorAll(sel + " tr[data-run]").forEach(tr => tr.onclick = () => openRun(+tr.dataset.run)); }
+const loadRuns = guard(async () => {
+  $("#runRows").innerHTML = runRowsHtml(await api("runs")) || `<tr><td colspan="9" class="muted">No runs yet.</td></tr>`;
+  bindRunRows("#runRows");
+});
+
+function askRun(payload, text) {
+  pendingRun = payload;
+  $("#runSummary").textContent = text;
+  $("#runDlg").showModal();
+}
+$("#startRun").onclick = guard(async () => {
+  const body = { ...pendingRun, region: $("#rRegion").value, headless: $("#rHeadless").checked, extra: $("#rExtra").value };
+  const r = await api(body.case_ids ? "cases/run" : "runs", { method: "POST", body });
+  $("#runDlg").close();
+  toast(`Run #${r.run_id} started`);
+  updateBadge(r.run_id);
+  openRun(r.run_id);
+});
+
+const openRun = guard(async id => {
+  clearInterval(runPoll);
+  $("#rdLog").textContent = ""; let offset = 0;
+  $("#runDetailDlg").showModal();
+  const tick = async () => {
+    const [run, log] = await Promise.all([api("runs/" + id), api(`runs/${id}/log?offset=${offset}`)]);
+    offset = log.offset;
+    if (log.text) {
+      const pre = $("#rdLog"), atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+      pre.textContent += log.text;
+      if (pre.textContent.length > 600000) pre.textContent = pre.textContent.slice(-400000);
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+    }
+    const running = run.status === "Running";
+    $("#rdTitle").textContent = `Run #${run.id} — ${run.title}`;
+    $("#cancelRun").classList.toggle("hidden", !running);
+    $("#cancelRun").onclick = guard(async () => { if (confirm("Stop this run?")) { await api(`runs/${id}/cancel`, { method: "POST" }); toast("Stopping…"); } });
+    const opts = (() => { try { return JSON.parse(run.options || "{}"); } catch { return {}; } })();
+    $("#rdMeta").innerHTML = `${chip(run.status)} <span class="muted">Started ${esc(run.started_at)}${run.finished_at ? " · finished " + esc(run.finished_at) : ""}</span>
+      <span class="muted">${opts.region ? "Region " + esc(opts.region) + " · " : ""}${opts.headless ? "headless" : "headed"}</span>
+      <span class="grow"></span><span>✔ ${run.passed} &nbsp; ✖ ${run.failed + run.errors} &nbsp; ⤼ ${run.skipped}</span>`;
+    $("#rdResultsWrap").classList.toggle("hidden", !run.results.length);
+    $("#rdResults").innerHTML = run.results.map(r => `<tr><td><span class="mono">${esc(shortNode(r.node_id))}</span> ${ide(r.file, r.line, r.root)}</td><td>${chip(r.outcome)}</td>
+      <td>${(r.duration || 0).toFixed(1)}s</td>
+      <td>${r.case_ids ? r.case_ids.split(",").map(c => `<a href="#" data-case="${c}">${tcId(c)}</a>`).join(" ") : '<span class="muted">none linked</span>'}</td>
+      <td class="muted" style="max-width:420px">${esc((r.message || "").split("\n")[0].slice(0, 240))}</td></tr>`).join("");
+    $("#rdResults").querySelectorAll("[data-case]").forEach(a => a.onclick = e => { e.preventDefault(); $("#runDetailDlg").close(); openCase(+a.dataset.case); });
+    if (!running) { clearInterval(runPoll); updateBadge(null); refresh(); }
+  };
+  await tick();
+  runPoll = setInterval(guard(tick), 1500);
+});
+$("#runDetailDlg").addEventListener("close", () => clearInterval(runPoll));
+
+function updateBadge(runId) {
+  const b = $("#runBadge");
+  b.className = runId ? "live" : "";
+  b.textContent = runId ? `● Run #${runId} in progress — view` : "";
+  b.onclick = runId ? () => openRun(runId) : null;
+}
+setInterval(guard(async () => { const s = await api("summary"); updateBadge(s.running); }), 5000);
+
+function refresh() { show(currentView); }
+show("dashboard");
+</script>
+</body>
+</html>
