@@ -19,6 +19,7 @@ nav { display: flex; gap: 4px; }
 nav button { background: none; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); font: inherit; }
 nav button.active { background: #e8effc; color: var(--accent); font-weight: 600; }
 #runBadge { margin-left: auto; font-size: 13px; color: var(--muted); }
+#runSuiteBtn:disabled { opacity: .5; }
 #runBadge.live { color: var(--accent); font-weight: 600; cursor: pointer; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -103,6 +104,7 @@ a.ide:hover { text-decoration: underline; }
     <button data-view="runs">Runs</button>
   </nav>
   <span id="runBadge"></span>
+  <button class="btn primary" id="runSuiteBtn" style="margin-left:12px">▶ Run suite</button>
 </header>
 
 <main>
@@ -254,6 +256,11 @@ a.ide:hover { text-decoration: underline; }
   <div class="dlg-head"><h2>Run automation</h2><button class="btn" data-close>✕</button></div>
   <div class="dlg-body">
     <p id="runSummary" style="margin-top:0"></p>
+    <div id="suitePick" class="hidden">
+      <label class="f">Project</label><select id="rProject" style="width:100%"></select>
+      <label class="f">Suite</label><select id="rSuite" style="width:100%"></select>
+      <p class="muted" id="rCount" style="margin:6px 0 0"></p>
+    </div>
     <label class="f">Region</label>
     <select id="rRegion"><option>Test</option><option>AP</option><option>ME</option><option>US</option><option>EU</option></select>
     <label class="f"><input type="checkbox" id="rHeadless"> Headless (default is headed)</label>
@@ -622,6 +629,7 @@ const loadProjects = guard(async () => {
       <td>${p.tests}</td><td>${p.linked}/${p.tests}</td>
       <td class="muted">${esc(p.last_scan_at || "never")}</td>
       <td style="white-space:nowrap">
+        <button class="btn primary" data-runall="${p.id}">▶ Run all</button>
         <button class="btn" data-scan="${p.id}">⟳ Scan</button>
         <button class="btn" data-import="${p.id}" title="Create a linked test case for each test that has none">⇪ Import as cases</button>
         <button class="btn" data-tests="${p.id}">Tests</button>
@@ -633,6 +641,7 @@ const loadProjects = guard(async () => {
     toast(r.created ? `${r.created} test case(s) created and linked` : "Every test in this project already has a case"); loadProjects();
   });
   on("tests", async id => { $("#aproject").value = id; show("automation"); });
+  on("runall", async id => askSuiteRun(String(id)));
   on("edit", async id => openProject(projects.find(p => p.id === id)));
 });
 function openProject(p) {
@@ -680,10 +689,50 @@ const loadRuns = guard(async () => {
 function askRun(payload, text) {
   pendingRun = payload;
   $("#runSummary").textContent = text;
+  $("#suitePick").classList.add("hidden");
   $("#runDlg").showModal();
 }
+
+// Run a whole suite / project / everything, no selection needed.
+let suiteTests = [];
+async function askSuiteRun(projectId = "", suite = "") {
+  await refreshMeta();
+  suiteTests = await api("automation");
+  pendingRun = { suite_mode: true };
+  $("#runSummary").textContent = "Run every automation test in the chosen project and suite. Linked test cases update when it finishes.";
+  $("#rProject").innerHTML = `<option value="">All projects</option>` +
+    META.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  $("#rProject").value = projectId || (META.projects.length === 1 ? META.projects[0].id : "");
+  fillSuites(suite);
+  $("#suitePick").classList.remove("hidden");
+  $("#runDlg").showModal();
+}
+function fillSuites(keep = "") {
+  const pid = $("#rProject").value;
+  const inProject = suiteTests.filter(t => !pid || String(t.project_id) === pid);
+  const suites = [...new Set(inProject.map(t => t.suite))].sort();
+  $("#rSuite").innerHTML = `<option value="">All suites</option>` +
+    suites.map(s => `<option>${esc(s)}</option>`).join("");
+  $("#rSuite").value = suites.includes(keep) ? keep : "";
+  countSuite();
+}
+function countSuite() {
+  const pid = $("#rProject").value, s = $("#rSuite").value;
+  const n = suiteTests.filter(t => (!pid || String(t.project_id) === pid) && (!s || t.suite === s)).length;
+  $("#rCount").textContent = `${n} automation test(s) will run.`;
+}
+$("#rProject").onchange = () => fillSuites();
+$("#rSuite").onchange = countSuite;
+$("#runSuiteBtn").onclick = guard(() => askSuiteRun());
+
 $("#startRun").onclick = guard(async () => {
-  const body = { ...pendingRun, region: $("#rRegion").value, headless: $("#rHeadless").checked, extra: $("#rExtra").value };
+  const opts = { region: $("#rRegion").value, headless: $("#rHeadless").checked, extra: $("#rExtra").value };
+  if (pendingRun.suite_mode) {
+    const r = await api("runs/suite", { method: "POST", body: { ...opts, project_id: $("#rProject").value || null, suite: $("#rSuite").value || null } });
+    $("#runDlg").close(); toast(`Run #${r.run_id} started — ${r.tests} test(s)`); updateBadge(r.run_id); openRun(r.run_id);
+    return;
+  }
+  const body = { ...pendingRun, ...opts };
   const r = await api(body.case_ids ? "cases/run" : "runs", { method: "POST", body });
   $("#runDlg").close();
   toast(`Run #${r.run_id} started`);
@@ -730,6 +779,8 @@ function updateBadge(runId) {
   b.className = runId ? "live" : "";
   b.textContent = runId ? `● Run #${runId} in progress — view` : "";
   b.onclick = runId ? () => openRun(runId) : null;
+  $("#runSuiteBtn").disabled = !!runId;   // one run at a time
+  $("#runSuiteBtn").title = runId ? `Run #${runId} is in progress` : "Run a whole suite, project, or everything";
 }
 setInterval(guard(async () => { const s = await api("summary"); updateBadge(s.running); }), 5000);
 

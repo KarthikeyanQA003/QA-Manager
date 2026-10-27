@@ -243,15 +243,69 @@ def discover(framework, root, scan_dir="", suite_prefix=""):
 # Running
 # ---------------------------------------------------------------------------
 
-def build_targets(framework, tests):
+def _compact_paths(tests, universe):
+    """Fewest file/folder paths that select exactly `tests`.
+
+    A whole suite is hundreds of test ids -- far past the Windows command-line
+    limit (~8k chars) -- so any file whose every test is selected collapses to
+    the file path, and any folder whose every test is selected to the folder.
+    """
+    chosen = {t["node_key"] for t in tests}
+    by_file = {}
+    for t in universe:
+        by_file.setdefault(t["file"], []).append(t)
+    full_files = {f for f, ts in by_file.items() if all(t["node_key"] in chosen for t in ts)}
+
+    # Folders: every test under the folder is selected.
+    def folder_of(f):
+        return f.rsplit("/", 1)[0] if "/" in f else ""
+
+    folders = {}
+    for f in by_file:
+        d = folder_of(f)
+        while d:
+            folders.setdefault(d, set()).add(f)
+            d = folder_of(d)
+    full_dirs = {d for d, fs in folders.items() if fs <= full_files}
+    # keep only the outermost full folders
+    full_dirs = {d for d in full_dirs if not any(d != o and d.startswith(o + "/") for o in full_dirs)}
+
+    targets, done = [], set()
+    for d in sorted(full_dirs):
+        targets.append(d)
+        done |= folders[d]
+    for f in sorted(full_files - done):
+        targets.append(f)
+        done.add(f)
+    for t in tests:
+        if t["file"] not in done:
+            targets.append(t["target"])
+    return targets
+
+
+def build_targets(framework, tests, universe=None):
+    """CLI selection for `tests`; `universe` is every test in the project, used to
+    shorten whole files / folders / classes to one path or name."""
+    universe = universe or tests
+    for t in tests + universe:
+        t.setdefault("node_key", t["target"])
     if framework == "selenium-maven":
-        # Surefire syntax: Class#m1+m2,Other#m3
+        # Surefire syntax: Class#m1+m2,Other,...  (a fully selected class runs whole)
+        chosen = {t["node_key"] for t in tests}
+        per_cls_all = {}
+        for t in universe:
+            per_cls_all.setdefault(t["target"].split("#", 1)[0], []).append(t)
         per_cls = {}
         for t in tests:
             cls, method = t["target"].split("#", 1)
             per_cls.setdefault(cls, []).append(method)
-        return ",".join(f"{c}#{'+'.join(ms)}" for c, ms in per_cls.items())
-    return " ".join(_quote(t["target"]) for t in tests)
+        parts = []
+        for c, ms in per_cls.items():
+            whole = all(t["node_key"] in chosen for t in per_cls_all.get(c, []))
+            parts.append(c if whole else f"{c}#{'+'.join(ms)}")
+        return ",".join(parts)
+    # pytest node ids / Playwright file:line, or whole files and folders
+    return " ".join(_quote(x) for x in _compact_paths(tests, universe))
 
 
 def _quote(arg):
@@ -260,9 +314,9 @@ def _quote(arg):
     return shlex.quote(arg)
 
 
-def build_command(framework, template, tests, junit, headless, region):
+def build_command(framework, template, tests, junit, headless, region, universe=None):
     return (template or FRAMEWORKS[framework]["command"]).format(
-        targets=build_targets(framework, tests),
+        targets=build_targets(framework, tests, universe),
         junit=junit,
         headed="" if headless else "--headed",
         headless=" --headless" if headless else "",

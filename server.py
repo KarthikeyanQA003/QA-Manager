@@ -376,10 +376,20 @@ class Runner:
         p = tests[0]
         framework = p["framework"]
         junit = RUNS_DIR / f"run_{run_id}_p{project_id}.xml"
+        with db() as conn:
+            universe = rows(conn.execute(
+                "SELECT node_id, file, target FROM automation_tests WHERE project_id=? AND present=1",
+                (project_id,)))
+        for t in tests + universe:
+            t["node_key"] = t["node_id"]
         cmd = frameworks.build_command(framework, p["command"], tests, junit,
-                                       options["headless"], options["region"])
+                                       options["headless"], options["region"], universe)
         if options["extra"].strip():
             cmd += " " + options["extra"].strip()
+        if os.name == "nt" and len(cmd) > 8000:
+            log.write(f"[ERROR] {p['project_name']}: the command is {len(cmd)} characters -- over the "
+                      "Windows limit (8191). Run the whole suite or fewer scattered tests.\n\n")
+            return 1, 0
         log.write(f"=== {p['project_name']} ({frameworks.FRAMEWORKS[framework]['label']}) -- "
                   f"{len(tests)} test(s)\n$ {cmd}\n  (in {p['path']})\n\n")
         log.flush()
@@ -796,6 +806,8 @@ class Handler(SimpleHTTPRequestHandler):
                     return {"run_id": RUNNER.start(b.get("title") or "Ad-hoc run", node_ids,
                                                    bool(b.get("headless")), b.get("region") or "Test",
                                                    b.get("extra") or "")}
+            if rest == ["suite"] and method == "POST":
+                return self.run_suite(self.body())
             run_id = int(rest[0])
             if len(rest) == 1 and method == "GET":
                 with db() as conn:
@@ -888,6 +900,30 @@ class Handler(SimpleHTTPRequestHandler):
                 conn.execute("INSERT INTO links (case_id, node_id) VALUES (?,?)", (cur.lastrowid, t["node_id"]))
                 created += 1
         return {"created": created}
+
+    def run_suite(self, data):
+        """Run every test of a project, of one suite in it, or of all projects."""
+        sql = """SELECT a.node_id FROM automation_tests a JOIN projects p ON p.id = a.project_id
+                 WHERE a.present = 1"""
+        args, parts = [], []
+        if data.get("project_id"):
+            sql += " AND a.project_id = ?"
+            args.append(int(data["project_id"]))
+        if data.get("suite"):
+            sql += " AND a.suite = ?"
+            args.append(data["suite"])
+        with db() as conn:
+            node_ids = [r[0] for r in conn.execute(sql + " ORDER BY a.project_id, a.file, a.line", args)]
+            if data.get("project_id"):
+                parts.append(get_project(conn, int(data["project_id"]))["name"])
+        if not node_ids:
+            raise ValueError("No automation tests found for that selection -- scan the project first")
+        parts.append(data.get("suite") or "all suites")
+        title = data.get("title") or ("Run all -- " + " / ".join(parts) if data.get("project_id")
+                                      else "Run all -- every project")
+        return {"run_id": RUNNER.start(title, node_ids, bool(data.get("headless")),
+                                       data.get("region") or "Test", data.get("extra") or ""),
+                "tests": len(node_ids)}
 
     def run_cases(self, data):
         case_ids = data.get("case_ids") or []
