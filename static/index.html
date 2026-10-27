@@ -916,6 +916,7 @@ document.querySelectorAll("#runDlg .mode").forEach(b => b.onclick = guard(async 
     : await api(pendingRun.case_ids || "module" in pendingRun ? "cases/run" : "runs", { method: "POST", body: { ...pendingRun, ...opts } });
   $("#runDlg").close();
   updateBadge(r.run_id);
+  refresh();   // the run reset its cases to Not Run -- show the clean board now
   if (headless) {
     // Background run: no log window; the header badge tracks it and the
     // results land on the cases when it finishes.
@@ -981,9 +982,18 @@ function updateBadge(runId) {
   $("#runSuiteBtn").disabled = !!runId;   // one run at a time
   $("#runSuiteBtn").title = runId ? `Run #${runId} is in progress` : "Run a whole suite, project, or everything";
 }
+// Keep the board live: refresh it while a run is going and once more when it ends.
+let lastRunning = null;
 setInterval(async () => {
   if (!WS || $("#app").classList.contains("hidden")) return;
-  try { const s = await api("summary"); updateBadge(s.running); } catch { /* signed out / switched */ }
+  try {
+    const s = await api("summary");
+    updateBadge(s.running);
+    const justFinished = lastRunning && !s.running;
+    lastRunning = s.running;
+    const dialogOpen = [...document.querySelectorAll("dialog")].some(d => d.open);
+    if ((s.running || justFinished) && !dialogOpen && ["board", "dashboard"].includes(currentView)) refresh();
+  } catch { /* signed out / switched */ }
 }, 5000);
 
 function refresh() { show(currentView); }

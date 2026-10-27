@@ -379,6 +379,7 @@ class Runner:
                 ).lastrowid
                 log_path = RUNS_DIR / f"run_{run_id}.log"
                 conn.execute("UPDATE runs SET log_path=? WHERE id=?", (str(log_path), run_id))
+                self._reset_cases(conn, ws_id, run_id, [t["node_id"] for t in tests])
 
             groups = {}
             for t in tests:
@@ -387,6 +388,21 @@ class Runner:
             threading.Thread(target=self._run_all, args=(run_id, groups, options, log_path),
                              daemon=True).start()
             return run_id
+
+    @staticmethod
+    def _reset_cases(conn, ws_id, run_id, node_ids):
+        """Every run starts from a clean slate: ALL of the project's cases go back
+        to 'Not Run' (Dashboard and Board start fresh); the cases in this run then
+        fill in as Pass / Fail / Skipped. Each case's previous result stays in its
+        history."""
+        stamp = now()
+        changed = [r[0] for r in conn.execute(
+            "SELECT id FROM cases WHERE workspace_id = ? AND status != 'Not Run'", (ws_id,))]
+        conn.execute("UPDATE cases SET status='Not Run', updated_at=? WHERE workspace_id = ?", (stamp, ws_id))
+        conn.executemany(
+            "INSERT INTO case_history (case_id, run_id, status, at, source) VALUES (?,?,?,?,?)",
+            [(cid, run_id, "Not Run", stamp, f"reset: run #{run_id} started") for cid in changed])
+        return len(changed)
 
     def _run_all(self, run_id, groups, options, log_path):
         exit_codes, updated = [], 0
