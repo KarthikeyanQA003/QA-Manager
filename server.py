@@ -38,6 +38,7 @@ import auth  # noqa: E402
 import codegen  # noqa: E402
 import frameworks  # noqa: E402
 import report  # noqa: E402
+import testruns  # noqa: E402
 
 DATA_DIR = TOOL_DIR / "data"
 RUNS_DIR = DATA_DIR / "runs"
@@ -48,7 +49,7 @@ CONFIG_PATH = DATA_DIR / "config.json"
 # for local testing only. Off unless the server is started with the flag.
 DEV_USER = None
 
-CASE_STATUSES = ["Not Run", "Running", "Pass", "Fail", "Blocked", "Skipped"]
+CASE_STATUSES = ["Not Run", "Running", "Pass", "Fail", "Blocked", "Retest", "Skipped"]
 
 # Every time the tool records is India Standard Time, whatever the machine's zone.
 IST = timezone(timedelta(hours=5, minutes=30), "IST")
@@ -156,6 +157,17 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
         if "is_admin" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        conn.executescript(testruns.SCHEMA)
+        case_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cases)")}
+        if "test_data" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN test_data TEXT DEFAULT ''")
+        if "section" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN section TEXT DEFAULT ''")
+            # Automated cases start in a section named after their test class.
+            for r in conn.execute(
+                    """SELECT l.case_id, MIN(a.cls) cls FROM links l JOIN automation_tests a ON a.node_id = l.node_id
+                       WHERE a.cls != '' GROUP BY l.case_id""").fetchall():
+                conn.execute("UPDATE cases SET section=? WHERE id=?", (section_from_cls(r["cls"]), r["case_id"]))
         rr_cols = {r["name"] for r in conn.execute("PRAGMA table_info(run_results)")}
         for col in ("started_at", "finished_at"):
             if col not in rr_cols:
@@ -244,6 +256,11 @@ def sync_automation():
         except ValueError as exc:
             print(f"[WARN] project {pid}: {exc}")
     return total
+
+
+def section_from_cls(cls):
+    """Test_AdminAddUser_Active -> 'AdminAddUser Active'; Playwright describe titles stay as they are."""
+    return re.sub(r"^Test_?", "", cls or "").replace("_", " ").strip() or (cls or "")
 
 
 def humanize(test_name):
@@ -687,7 +704,8 @@ SENT = object()   # a handler already wrote its own response (an HTML page)
 # API
 # ---------------------------------------------------------------------------
 
-CASE_FIELDS = ["title", "module", "priority", "preconditions", "steps", "expected", "notes", "status"]
+CASE_FIELDS = ["title", "module", "section", "priority", "preconditions", "steps", "expected", "test_data",
+               "notes", "status"]
 
 
 def case_row(conn, case_id):
@@ -712,9 +730,13 @@ def list_cases(q, ws_id):
              FROM cases c WHERE c.workspace_id = ?"""
     args = [ws_id]
     if q.get("q"):
-        sql += " AND (c.title LIKE ? OR c.steps LIKE ? OR c.expected LIKE ? OR ('TC-' || printf('%04d', c.id)) LIKE ?)"
+        sql += """ AND (c.title LIKE ? OR c.steps LIKE ? OR c.expected LIKE ? OR c.test_data LIKE ?
+                   OR ('TC-' || printf('%04d', c.id)) LIKE ?)"""
         like = f"%{q['q']}%"
-        args += [like] * 4
+        args += [like] * 5
+    if "section" in q:
+        sql += " AND c.section = ?"
+        args.append(q["section"])
     for field in ("module", "status", "priority"):
         if q.get(field):
             sql += f" AND c.{field} = ?"
@@ -821,7 +843,7 @@ def summary(ws_id):
             """SELECT module,
                       COUNT(*) total,
                       SUM(status='Pass') pass, SUM(status='Fail') fail,
-                      SUM(status IN ('Blocked','Skipped')) blocked, SUM(status='Not Run') notrun
+                      SUM(status IN ('Blocked','Skipped','Retest')) blocked, SUM(status='Not Run') notrun
                FROM cases WHERE workspace_id = ? GROUP BY module ORDER BY module""", (ws_id,)))
         auto = conn.execute(
             """SELECT COUNT(*) total,
@@ -833,11 +855,15 @@ def summary(ws_id):
             """SELECT COUNT(DISTINCT l.case_id) FROM links l JOIN cases c ON c.id = l.case_id
                WHERE c.workspace_id = ?""", (ws_id,)).fetchone()[0]
         runs = rows(conn.execute("SELECT * FROM runs WHERE workspace_id = ? ORDER BY id DESC LIMIT 5", (ws_id,)))
+        sections = rows(conn.execute(
+            """SELECT module, section, COUNT(*) total FROM cases WHERE workspace_id = ?
+               GROUP BY module, section ORDER BY module, section""", (ws_id,)))
         suites = [r[0] for r in conn.execute(
             """SELECT DISTINCT a.suite FROM automation_tests a JOIN projects p ON p.id = a.project_id
                WHERE a.present = 1 AND p.workspace_id = ? ORDER BY a.suite""", (ws_id,))]
     return {
-        "by_status": by_status, "modules": modules, "cases_total": cases_total,
+        "by_status": by_status, "modules": modules, "sections": sections, "cases_total": cases_total,
+        "results": testruns.RESULTS,
         "cases_linked": cases_linked, "auto_total": auto["total"], "auto_linked": auto["linked"] or 0,
         "recent_runs": runs, "suites": suites, "statuses": CASE_STATUSES, "priorities": PRIORITIES,
         "running": RUNNER.run_id if RUNNER.busy() else None,
@@ -848,8 +874,8 @@ def summary(ws_id):
     }
 
 
-EXPORT_COLUMNS = ["ID", "Title", "Module", "Priority", "Status", "Preconditions", "Steps",
-                  "Expected Result", "Notes", "Automation Tests", "Last Run", "Created", "Updated"]
+EXPORT_COLUMNS = ["ID", "Title", "Module", "Section", "Priority", "Status", "Preconditions", "Steps",
+                  "Expected Result", "Test Data", "Notes", "Automation Tests", "Last Run", "Created", "Updated"]
 
 
 def cases_with_links(ws_id):
@@ -866,8 +892,8 @@ def cases_with_links(ws_id):
 
 
 def export_rows(ws_id):
-    return [[f"TC-{c['id']:04d}", c["title"], c["module"], c["priority"], c["status"],
-             c["preconditions"], c["steps"], c["expected"], c["notes"],
+    return [[f"TC-{c['id']:04d}", c["title"], c["module"], c["section"], c["priority"], c["status"],
+             c["preconditions"], c["steps"], c["expected"], c["test_data"], c["notes"],
              "\n".join(c["links"]), c["last_run_at"] or "", c["created_at"], c["updated_at"]]
             for c in cases_with_links(ws_id)]
 
@@ -901,7 +927,7 @@ def export_file(fmt, ws_id, ws_key="cflow"):
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="2F6FDE")
-    widths = [10, 50, 26, 10, 10, 30, 60, 40, 30, 70, 19, 19, 19]
+    widths = [10, 50, 26, 26, 10, 10, 30, 60, 40, 30, 30, 70, 19, 19, 19]
     for i, w in enumerate(widths):
         ws.column_dimensions[chr(65 + i)].width = w
     for row in ws.iter_rows(min_row=2):
@@ -1261,6 +1287,32 @@ class Handler(SimpleHTTPRequestHandler):
                                      [(case_id, n) for n in node_ids])
                     return case_row(conn, case_id)
 
+        if head == "testruns":
+            with db() as conn:
+                if not rest:
+                    if method == "GET":
+                        return testruns.list_runs(conn, ws_id)
+                    if method == "POST":
+                        run_id = testruns.create(conn, ws_id, self.body(), self.user["email"], now())
+                        return testruns.get_run(conn, ws_id, run_id)
+                run_id = int(rest[0])
+                if len(rest) == 1:
+                    if method == "GET":
+                        return testruns.get_run(conn, ws_id, run_id)
+                    if method == "PUT":
+                        return testruns.update_run(conn, ws_id, run_id, self.body(), now())
+                    if method == "DELETE":
+                        return testruns.delete_run(conn, ws_id, run_id)
+                if len(rest) == 3 and rest[1] == "cases" and method == "PUT":
+                    return testruns.record(conn, ws_id, run_id, int(rest[2]), self.body(), self.user["email"], now())
+
+        if head == "reports" and method == "GET":
+            with db() as conn:
+                return testruns.reports(conn, ws_id, q.get("scope", ""))
+
+        if head == "results" and rest == ["upload"] and method == "POST":
+            return self.upload_results(self.body())
+
         if head == "automation":
             if not rest and method == "GET":
                 return list_automation(q, ws_id)
@@ -1366,6 +1418,51 @@ class Handler(SimpleHTTPRequestHandler):
                                  [(case_id, n) for n in node_ids])
             return case_row(conn, case_id)
 
+    def upload_results(self, data):
+        """Results file(s) from a run made elsewhere (CI, a teammate, the IDE):
+        JUnit XML from pytest, Playwright, Selenium/Maven Surefire, TestNG...
+        Stored as an 'Imported' run; linked cases update as for a run started here."""
+        with db() as conn:
+            project = owned_project(conn, int(data.get("project_id") or 0), self.ws["id"])
+        files = data.get("files") or []
+        if not files:
+            raise ValueError("Choose at least one results file (JUnit XML)")
+        if RUNNER.busy():
+            raise RuntimeError(f"Run #{RUNNER.run_id} is in progress -- upload when it finishes.")
+        for f in files[:50]:
+            text = f.get("content") or ""
+            if "<testcase" not in text and "<testsuite" not in text:
+                raise ValueError(f"{f.get('name') or 'file'} is not a JUnit XML results file")
+        with db() as conn:
+            run_id = conn.execute(
+                """INSERT INTO runs (workspace_id, title, targets, options, status, started_at, finished_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (self.ws["id"], (data.get("title") or "").strip() or f"Uploaded results -- {project['name']}", "[]",
+                 json.dumps({"uploaded_by": self.user["email"], "started_by": self.user["email"]}),
+                 "Imported", now(), now())).lastrowid
+        paths = []
+        for i, f in enumerate(files[:50]):
+            path = RUNS_DIR / f"run_{run_id}_upload_{i}.xml"
+            path.write_text(f.get("content") or "", encoding="utf-8")
+            paths.append(path)
+        try:
+            updated = apply_results(run_id, paths, project["id"], source=f"upload: {self.user['email']}")
+        except ET.ParseError as exc:
+            with db() as conn:
+                conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
+            raise ValueError(f"Unreadable XML: {exc}")
+        with db() as conn:
+            run = dict(conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+            if not (run["passed"] + run["failed"] + run["errors"] + run["skipped"]):
+                conn.execute("DELETE FROM runs WHERE id=?", (run_id,))
+                raise ValueError("None of the results match a test in this connection -- pick the right "
+                                 "connection, or re-scan it first")
+            conn.execute("UPDATE runs SET status=? WHERE id=?",
+                         ("Passed" if not (run["failed"] + run["errors"]) else "Failed", run_id))
+        write_report(run_id)
+        return {"run_id": run_id, "updated_cases": updated, "passed": run["passed"],
+                "failed": run["failed"] + run["errors"], "skipped": run["skipped"]}
+
     def generate_cases(self, data):
         """One case per automation test of this project that has no linked case yet."""
         sql = """SELECT a.* FROM automation_tests a JOIN projects p ON p.id = a.project_id
@@ -1388,9 +1485,9 @@ class Handler(SimpleHTTPRequestHandler):
                 status = {"passed": "Pass", "failed": "Fail", "error": "Fail",
                           "skipped": "Skipped"}.get(t["last_result"], "Not Run")
                 cur = conn.execute(
-                    """INSERT INTO cases (workspace_id, title, module, priority, steps, status, last_run_id,
-                                          last_run_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (self.ws["id"], humanize(t["name"]), t["suite"], "Medium", t["doc"], status,
+                    """INSERT INTO cases (workspace_id, title, module, section, priority, steps, status, last_run_id,
+                                          last_run_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (self.ws["id"], humanize(t["name"]), t["suite"], section_from_cls(t["cls"]), "Medium", t["doc"], status,
                      t["last_run_id"], t["last_run_at"], stamp, stamp))
                 conn.execute("INSERT INTO links (case_id, node_id) VALUES (?,?)", (cur.lastrowid, t["node_id"]))
                 created += 1

@@ -114,6 +114,46 @@ uv run server.py --import-junit D:\Automation\Cflow\testautomation\results.xml -
 Data is stored in `data/` (SQLite and run logs), which is git-ignored. Back up
 `data/tcm.db` to keep your cases.
 
+## Test cases, test runs and reports
+
+- **Test cases** have a title, module (suite), **section**, priority,
+  preconditions, steps, expected result, **test data** and notes. The Test
+  Cases sidebar lists the modules. Open a module to see its sections and click
+  one to filter. Cases imported from automation start in a section named after
+  their test class.
+- **Statuses:** Not Run, Running, Pass, Fail, Blocked, **Retest**, Skipped.
+- **Test Runs tab (manual execution):**
+  1. Click *+ New test run*. Give it a name, a release / milestone, an
+     environment and a description.
+  2. Choose the cases: all cases, ticked modules and sections, or the cases
+     you selected on the Test Cases tab (*＋ Test run*). You can also filter
+     by priority and by manual / automated.
+  3. Execute the run. The left side lists its cases by module and section.
+     The right side shows the selected case's preconditions, steps, expected
+     result and test data, with fields for the actual result, a comment and a
+     defect id.
+  4. Click **Passed / Failed / Blocked / Retest / Skipped**. The result is
+     saved, the case's status is updated (Board, Dashboard, history), and the
+     next untested case opens.
+  5. *Close run* when you are done. A closed run is read-only until it is
+     reopened.
+- **Automation Runs tab → ⇪ Upload results:** uploads JUnit XML produced by
+  CI or another machine. This covers pytest `--junitxml`, the Playwright junit
+  reporter, Maven Surefire `TEST-*.xml` and TestNG in JUnit format. Pick the
+  automation connection the tests belong to. The linked cases update just as
+  they do for a run started here.
+- **Reports tab:** choose the whole project, or one test run. The page shows:
+  - **release readiness**: *Ready*, *At risk* or *Not ready*, plus the
+    criteria behind it. All of these must hold for Ready: at least 95% of
+    cases executed, a pass rate of at least 95%, no failed or blocked
+    High-priority cases, and no cases waiting for retest.
+  - executed %, pass rate and automation coverage
+  - status, priority and module breakdowns
+  - the failures, blocked and retest cases
+  - automation and manual run trends
+
+  Print it or save it as a PDF from the page.
+
 ## Jira-style views, IDE links and exports
 
 - **Board**: a column per status. Drag a card to another column to change its
