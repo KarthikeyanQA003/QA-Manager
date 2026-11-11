@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -207,6 +208,33 @@ def init_db():
         )
         conn.execute("UPDATE run_results SET outcome='not run' WHERE outcome IN ('queued','running')")
         conn.execute("UPDATE cases SET status='Not Run' WHERE status='Running'")
+        # One title format inside the tool (format_title). Titles saved in other
+        # formats before this existed are converted here; the old database is kept.
+        changed = [(format_title(r["title"]), r["id"]) for r in conn.execute("SELECT id, title FROM cases")
+                   if format_title(r["title"]) != r["title"]]
+        # Modules, sections and automation suites follow the same format (format_name).
+        renamed = [(format_name(r["module"]), format_name(r["section"]), r["id"])
+                   for r in conn.execute("SELECT id, module, section FROM cases")
+                   if (format_name(r["module"]), format_name(r["section"])) != (r["module"], r["section"])]
+        suites = [(format_name(r["suite"]), r["node_id"])
+                  for r in conn.execute("SELECT node_id, suite FROM automation_tests")
+                  if format_name(r["suite"]) != r["suite"]]
+        mods = [r for r in conn.execute("SELECT workspace_id, module, section, created_at FROM modules").fetchall()
+                if (format_name(r["module"]), format_name(r["section"])) != (r["module"], r["section"])]
+        if changed or renamed or suites or mods:
+            backup = DATA_DIR / "tcm.backup-before-title-format.db"
+            if not backup.exists():
+                shutil.copy2(DB_PATH, backup)
+            conn.executemany("UPDATE cases SET title=? WHERE id=?", changed)
+            conn.executemany("UPDATE cases SET module=?, section=? WHERE id=?", renamed)
+            conn.executemany("UPDATE automation_tests SET suite=? WHERE node_id=?", suites)
+            for r in mods:
+                conn.execute("DELETE FROM modules WHERE workspace_id=? AND module=? AND section=?",
+                             (r["workspace_id"], r["module"], r["section"]))
+                conn.execute("INSERT OR IGNORE INTO modules (workspace_id, module, section, created_at) VALUES (?,?,?,?)",
+                             (r["workspace_id"], format_name(r["module"]), format_name(r["section"]), r["created_at"]))
+            print(f"Name format: {len(changed)} title(s), {len(renamed)} case module/section(s), "
+                  f"{len(suites)} automation suite(s) converted (backup: {backup.name})")
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +269,7 @@ def scan_project(project_id):
             if p["framework"] == "playwright-js":
                 # file:line shifts when lines move; key on the title path instead.
                 t["node_id"] = f"{pre}{t['file']}::{t['cls'] + ' › ' if t['cls'] else ''}{t['name']}"
+            t["suite"] = format_name(t["suite"])
             conn.execute(
                 """INSERT INTO automation_tests (node_id, project_id, file, suite, cls, name, line, doc,
                                                  markers, junit_key, target, present)
@@ -269,21 +298,75 @@ def sync_automation():
 
 
 def section_from_cls(cls):
-    """Test_AdminAddUser_Active -> 'AdminAddUser Active'; Playwright describe titles stay as they are."""
-    return re.sub(r"^Test_?", "", cls or "").replace("_", " ").strip() or (cls or "")
+    """Test_AdminAddUser_Active -> 'Admin add user active' (see format_name)."""
+    return format_name(re.sub(r"^Test_?", "", cls or "").strip() or (cls or ""))
+
+
+_TITLE_PREFIX = re.compile(
+    r"^(?:test_?(?:tc(?:[\s_\-]*[A-Za-z]+[\s_\-]+|[\s_\-]*))?\d+[A-Za-z]?|tc(?:[\s_\-]*[A-Za-z]+[\s_\-]+|[\s_\-]*)\d+[A-Za-z]?)"
+    r"(?![A-Za-z0-9])[\s:._\-\u2013\u2014]*", re.I)
+
+
+_ACRONYM = re.compile(r"^[A-Z][A-Z0-9]+$")          # OCR, CRUD, S1, OTP stay upper case
+_NAME_SUFFIX = {"testcases", "testcase", "tests", "test", "cases", "case"}
+
+
+def _words(s):
+    """snake_case, kebab-case, camelCase and spaces -> a list of words."""
+    s = re.sub(r"[_\-]+", " ", (s or "").strip())
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)          # viewAll -> view All
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", s)        # OCRGrid -> OCR Grid
+    return s.split()
+
+
+def sentence_case(s):
+    """'AdminAccessPermissions ViewAll' -> 'Admin access permissions view all'; acronyms are kept."""
+    out = " ".join(w if _ACRONYM.match(w) else w.lower() for w in _words(s))
+    return out[:1].upper() + out[1:]
+
+
+def format_title(title):
+    """One title format inside the tool, whatever the IDE or spreadsheet used.
+
+    The test number at the front is dropped (the tool has its own TC-0001 ids),
+    snake_case and camelCase become words, and the text is sentence case:
+      'TC01 FrgtPwdPrcss1'                    -> 'Frgt pwd prcss1'
+      'tc_wfp_006 Verify benchmark hours'     -> 'Verify benchmark hours'
+      'test_TC_WFS_003_form_creation'         -> 'Form creation'
+      'select next dateformat'                -> 'Select next dateformat'
+      'Verify OCR grid CRUD'                  -> 'Verify OCR grid CRUD'
+    """
+    s = (title or "").strip()
+    s = _TITLE_PREFIX.sub("", s)
+    s = _TITLE_PREFIX.sub("", s)                     # 'TC01 tc_rv_002 ...' carries two numbers
+    if not s.strip():                                # the title was only a number: keep it
+        s = (title or "").strip()
+    return sentence_case(s)
+
+
+def format_name(name):
+    """Module, section and automation suite names, in the same format as titles.
+
+    A trailing 'test cases' / 'tests' is dropped (every module here holds test cases):
+      'Document_Designer_TestCases'            -> 'Document designer'
+      'AdminAccessPermissions ViewAll EditMyItems' -> 'Admin access permissions view all edit my items'
+      'OCR_testcases'                          -> 'OCR'
+      'Frgt_pwd_test'                          -> 'Frgt pwd'
+    """
+    words = _words(name)
+    trimmed = list(words)
+    while trimmed and trimmed[-1].lower() in _NAME_SUFFIX:
+        trimmed.pop()
+    while trimmed and trimmed[0].lower() in _NAME_SUFFIX:       # Test_new_OCR -> New OCR
+        trimmed.pop(0)
+    return sentence_case(" ".join(trimmed or words))
 
 
 def humanize(test_name):
-    """test_TC_WFS_003_form_creation_main_section -> 'TC_WFS_003 Form creation main section'."""
+    """test_TC_WFS_003_form_creation_main_section -> 'Form creation main section' (see format_title)."""
     if " " in test_name:          # already a sentence (Playwright / JUnit5 display names)
-        return test_name
-    name = re.sub(r"^test_?", "", test_name)
-    m = re.match(r"((?:TC|tc)[_A-Za-z]*?_?\d+[A-Za-z]?)_(.*)", name)
-    if m:
-        rest = m.group(2).replace("_", " ").strip()
-        return f"{m.group(1)} {rest[:1].upper()}{rest[1:]}"
-    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name).replace("_", " ").strip()   # camelCase too
-    return name[:1].upper() + name[1:]
+        return format_title(test_name)
+    return format_title(re.sub(r"^test_?", "", test_name))
 
 
 # ---------------------------------------------------------------------------
@@ -1507,6 +1590,11 @@ class Handler(SimpleHTTPRequestHandler):
                   for f in CASE_FIELDS if f in data}
         if case_id is None and not values.get("title"):
             raise ValueError("Title is required")
+        if values.get("title"):
+            values["title"] = format_title(values["title"])
+        for f in ("module", "section"):
+            if values.get(f):
+                values[f] = format_name(values[f])
         if values.get("status") and values["status"] not in CASE_STATUSES:
             raise ValueError(f"Unknown status {values['status']}")
         stamp = now()
@@ -1548,6 +1636,11 @@ class Handler(SimpleHTTPRequestHandler):
         with db() as conn:
             for rec in recs:
                 rec = {k: v for k, v in rec.items() if k in CASE_FIELDS and v not in (None, "")}
+                if rec.get("title"):
+                    rec["title"] = format_title(rec["title"])
+                for f in ("module", "section"):
+                    if rec.get(f):
+                        rec[f] = format_name(rec[f])
                 existing = None
                 if rec.get("ref"):
                     existing = conn.execute("SELECT * FROM cases WHERE workspace_id=? AND ref=? AND module=?",
@@ -1590,7 +1683,7 @@ class Handler(SimpleHTTPRequestHandler):
         """Modules (suites) and their sections: list, add, rename, delete / move."""
         ws_id, stamp = self.ws["id"], now()
         clean = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()[:120]
-        module, section, name = clean(b.get("module")), clean(b.get("section")), clean(b.get("name"))
+        module, section, name = clean(b.get("module")), clean(b.get("section")), format_name(clean(b.get("name")))
         with db() as conn:
             if method == "GET":
                 return summary(ws_id)["sections"]

@@ -86,7 +86,7 @@ def build(conn, run_id, generated_at):
             f'<span style="width:{100 * c[k] / n:.2f}%;background:{COLOR[k]}" title="{LABEL[k]}: {c[k]}"></span>'
             for k, _, _ in OUTCOMES if c.get(k)) + "</div>"
 
-    cards = [("Total tests", total, "#1c2330"), ("Passed", counts["passed"], COLOR["passed"]),
+    cards = [("Total tests", total, "#0b3d91"), ("Passed", counts["passed"], COLOR["passed"]),
              ("Failed", counts["failed"] + counts["error"], COLOR["failed"]),
              ("Skipped", counts["skipped"], COLOR["skipped"]),
              ("Not run", counts["not run"] + counts["queued"] + counts["running"], COLOR["not run"]),
@@ -126,11 +126,11 @@ def build(conn, run_id, generated_at):
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Run #{run_id} report</title>
 <style>
-:root {{ --ink:#1c2330; --muted:#6b7385; --line:#e3e6ec; --bg:#f4f6f9; }}
+:root {{ --ink:#14213d; --muted:#5b6b86; --line:#d6e0f0; --bg:#eef3fa; --brand:#0b3d91; --accent:#1a5fd0; --tint:#e6eefb; }}
 * {{ box-sizing: border-box; }}
-body {{ margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }}
-header {{ background:#1c2330; color:#fff; padding:18px 24px; }}
-header h1 {{ margin:0; font-size:20px; }} header .sub {{ color:#aeb6c6; margin-top:2px; }}
+body {{ margin:0; font:14px/1.45 Arial,"Helvetica Neue",Helvetica,sans-serif; color:var(--ink); background:var(--bg); }}
+header {{ background:linear-gradient(90deg,#0b3d91,#1552b8); color:#fff; padding:18px 24px; border-bottom:3px solid var(--accent); }}
+header h1 {{ margin:0; font-size:20px; }} header .sub {{ color:#cfdcf5; margin-top:2px; }}
 main {{ max-width:1400px; margin:0 auto; padding:20px 16px; }}
 .panel {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }}
 .meta {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px 20px; margin:0; }}
@@ -143,7 +143,7 @@ main {{ max-width:1400px; margin:0 auto; padding:20px 16px; }}
 h2 {{ font-size:15px; margin:0 0 12px; }}
 table {{ width:100%; border-collapse:collapse; }}
 th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }}
-th {{ font-size:12px; text-transform:uppercase; color:var(--muted); background:#fafbfc; }}
+th {{ font-size:12px; text-transform:uppercase; color:var(--brand); font-weight:700; background:var(--tint); border-bottom:2px solid #c3d4f0; }}
 .chip {{ display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; color:#fff; white-space:nowrap; }}
 .muted {{ color:var(--muted); }} .mono {{ font-family:ui-monospace,Consolas,monospace; font-size:11px; word-break:break-all; }}
 .nw {{ white-space:nowrap; }} .tn {{ font-weight:600; word-break:break-word; }}
@@ -152,7 +152,7 @@ details summary {{ cursor:pointer; color:#d64545; font-size:12px; margin-top:4px
 details pre {{ background:#11151c; color:#d8dee9; padding:10px; border-radius:6px; white-space:pre-wrap; font-size:12px; max-height:320px; overflow:auto; }}
 .filters {{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; align-items:center; }}
 .filters button {{ font:inherit; padding:4px 12px; border:1px solid var(--line); border-radius:14px; background:#fff; cursor:pointer; }}
-.filters button.on {{ background:#2f6fde; border-color:#2f6fde; color:#fff; }}
+.filters button.on {{ background:var(--accent); border-color:var(--accent); color:#fff; }}
 .filters input {{ font:inherit; padding:5px 9px; border:1px solid var(--line); border-radius:6px; margin-left:auto; min-width:220px; }}
 .scroll {{ overflow-x:auto; }}
 @media print {{ .filters {{ display:none; }} details {{ display:block; }} body {{ background:#fff; }} }}
