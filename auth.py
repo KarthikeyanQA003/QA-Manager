@@ -80,6 +80,9 @@ def load_config(path):
         cfg = {}
     cfg.setdefault("google_client_id", "")
     cfg.setdefault("allowed_domains", [])
+    # Addresses (besides localhost) people may open the tool at when it is hosted,
+    # e.g. ["192.168.1.20", "qa.cavintek.com"]. Empty = this computer only.
+    cfg.setdefault("allowed_hosts", [])
     return cfg
 
 
@@ -272,11 +275,13 @@ def end_session(conn, token):
     conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
 
 
-def cookie_header(token, clear=False):
+def cookie_header(token, clear=False, secure=False):
+    """secure=True (served over HTTPS) stops the browser sending the cookie over plain HTTP."""
+    flags = "; Secure" if secure else ""
     if clear:
-        return f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
+        return f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{flags}"
     return (f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; "
-            f"Max-Age={SESSION_DAYS * 86400}")
+            f"Max-Age={SESSION_DAYS * 86400}{flags}")
 
 
 def token_from_cookie(header):

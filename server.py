@@ -53,6 +53,8 @@ MAX_BODY = 60 * 1024 * 1024   # JSON body: an Excel file or a few screenshots, b
 # Set by --dev-user: enables a sign-in without Google for that one address,
 # for local testing only. Off unless the server is started with the flag.
 DEV_USER = None
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+ALLOWED_HOSTS = set()     # extra addresses from config.json "allowed_hosts" (hosting)
 
 CASE_STATUSES = ["Not Run", "Running", "Pass", "Fail", "Blocked", "Retest", "Skipped"]
 
@@ -1128,13 +1130,15 @@ class Handler(SimpleHTTPRequestHandler):
           - writes must be JSON, which a cross-site <form> cannot send and a
             cross-site fetch cannot send without a CORS preflight we never grant
         """
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        if host not in ("localhost", "127.0.0.1", "::1"):
+        host_header = (self.headers.get("Host") or "").strip()
+        host = urlparse("//" + host_header).hostname or ""
+        if host not in LOCAL_HOSTS and host not in ALLOWED_HOSTS:
             return False
         origin = self.headers.get("Origin")
         if origin:
-            o = urlparse(origin)
-            if o.hostname not in ("localhost", "127.0.0.1", "::1") or o.port != self.server.server_address[1]:
+            # The page and the API share one address, so Origin must name the same
+            # host:port the browser asked for (works directly and behind a proxy).
+            if urlparse(origin).netloc.lower() != host_header.lower():
                 return False
         if method != "GET" and not (self.headers.get("Content-Type") or "").startswith("application/json"):
             return False
@@ -1230,11 +1234,15 @@ class Handler(SimpleHTTPRequestHandler):
         with db() as conn:
             return auth.get_workspace(conn, int(ws_id), self.user["email"])
 
+    def is_https(self):
+        """True when an HTTPS reverse proxy (Caddy, nginx) forwarded this request."""
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
     def sign_in(self, email, name=None, picture=None):
         with db() as conn:
             if name is not None:      # Google / dev sign-in: refresh the profile
                 auth.upsert_user(conn, email, name, picture or "")
-            self.cookie_out = auth.cookie_header(auth.create_session(conn, email))
+            self.cookie_out = auth.cookie_header(auth.create_session(conn, email), secure=self.is_https())
             return {"user": auth.session_user(conn, auth.token_from_cookie(self.cookie_out.split(";")[0]))}
 
     def dispatch_auth(self, method, parts, q):
@@ -1295,7 +1303,7 @@ class Handler(SimpleHTTPRequestHandler):
         if parts == ["auth", "logout"] and method == "POST":
             with db() as conn:
                 auth.end_session(conn, self.session_token())
-            self.cookie_out = auth.cookie_header("", clear=True)
+            self.cookie_out = auth.cookie_header("", clear=True, secure=self.is_https())
             return {"ok": True}
         return None
 
@@ -1880,6 +1888,9 @@ class SingleInstanceServer(ThreadingHTTPServer):
 def main():
     parser = argparse.ArgumentParser(description="CFlow Test Case Manager")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="address to listen on: 127.0.0.1 = this computer only (default), "
+                             "0.0.0.0 = the network (also list the address in data/config.json allowed_hosts)")
     parser.add_argument("--import-junit", metavar="XML",
                         help="record an external run's junit xml, update linked cases, and exit")
     parser.add_argument("--project", type=int, default=FIRST_PROJECT_ID,
@@ -1888,7 +1899,18 @@ def main():
                         help="LOCAL TESTING ONLY: allow signing in as EMAIL without Google")
     args = parser.parse_args()
 
-    global DEV_USER
+    global DEV_USER, ALLOWED_HOSTS
+    ALLOWED_HOSTS = {h.strip().lower() for h in auth.load_config(CONFIG_PATH)["allowed_hosts"] if h.strip()}
+    hosted = args.host not in LOCAL_HOSTS
+    if hosted and args.dev_user:
+        print("[ERROR] --dev-user lets anyone sign in without a password; it cannot be used with --host.")
+        return 1
+    if hosted:
+        if not ALLOWED_HOSTS:
+            print('[WARN] --host is set but data/config.json has no "allowed_hosts" -- other computers '
+                  'will get "forbidden". Add the address people will open, e.g. "allowed_hosts": ["192.168.1.20"].')
+        print(f"[WARN] Listening on {args.host}: anyone who can reach this address can see the sign-in "
+              "page, and signed-in users can run test commands on this machine.")
     if args.dev_user:
         DEV_USER = args.dev_user.strip().lower()
         print(f"[WARN] Developer sign-in enabled for {DEV_USER} -- anyone who can open this page "
@@ -1910,12 +1932,14 @@ def main():
         return
 
     try:
-        server = SingleInstanceServer(("127.0.0.1", args.port), Handler)
+        server = SingleInstanceServer((args.host, args.port), Handler)
     except OSError:
         print(f"[ERROR] Port {args.port} is already in use -- the Test Case Manager is probably already "
               f"running (open http://localhost:{args.port}), or use --port.")
         return 1
     print(f"[OK] Test Case Manager running at http://localhost:{args.port}  (Ctrl+C to stop)")
+    for h in sorted(ALLOWED_HOSTS) if hosted else ():
+        print(f"     also open at http://{h}:{args.port} (or your HTTPS address if behind a proxy)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

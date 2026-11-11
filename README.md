@@ -224,6 +224,90 @@ folder → *Copy Path*). The tool scans the folder for tests. Then use
 - **Open in IDE** opens each test in its own project folder.
 - To record results from a run you made outside the tool:
   `server.py --import-junit results.xml --project <id>`.
-- **Security:** run commands are shell commands. The server listens only on
-  127.0.0.1 and accepts API calls only from its own page, as JSON. Requests
-  from other websites open in your browser are refused.
+- **Security:** run commands are shell commands. By default the server listens
+  only on 127.0.0.1 and accepts API calls only from its own page, as JSON.
+  Requests from other websites open in your browser are refused.
+
+## Hosting for a team
+
+Everything here is free and open source: Python, SQLite, and optionally
+[Caddy](https://caddyserver.com) for HTTPS. The machine that hosts the tool
+also **runs the tests**, so it needs the automation projects, their language
+runtimes and browsers (e.g. `npx playwright install`).
+
+Two settings open the tool up. Both are required, so it never becomes public
+by accident:
+
+1. `--host 0.0.0.0` makes the server listen on the network.
+2. `"allowed_hosts"` in `data/config.json` lists the addresses people open it at:
+
+   ```json
+   {
+     "allowed_domains": ["cavintek.com"],
+     "allowed_hosts": ["192.168.1.20", "qa.cavintek.com"]
+   }
+   ```
+
+### Office network (LAN)
+
+```powershell
+ipconfig                                   # note this PC's IPv4 address, e.g. 192.168.1.20
+# put that address in data/config.json "allowed_hosts", then:
+uv run server.py --host 0.0.0.0
+# allow the port through Windows Firewall (admin PowerShell, once):
+New-NetFirewallRule -DisplayName "Test Case Manager" -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow -Profile Private
+```
+
+Teammates open `http://192.168.1.20:8765`. Give the PC a fixed IP in the router
+so the address doesn't change. Plain HTTP is fine on a trusted office network
+only. For anything else, use HTTPS as below.
+
+### Internet, with HTTPS (Linux server + Caddy)
+
+On any Linux VM (a cloud VM, or an old PC), with a domain such as
+`qa.cavintek.com` pointing at it:
+
+```bash
+git clone https://github.com/KarthikeyanQA003/QA-Manager.git /opt/qa-manager
+cd /opt/qa-manager && uv run server.py      # first start creates data/; Ctrl+C
+# add "qa.cavintek.com" to data/config.json "allowed_hosts"
+```
+
+Keep the tool on 127.0.0.1 and let Caddy face the internet. Caddy gets and
+renews the HTTPS certificate by itself. `/etc/caddy/Caddyfile`:
+
+```
+qa.cavintek.com {
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Run the tool as a service, `/etc/systemd/system/qa-manager.service`:
+
+```ini
+[Unit]
+Description=QA Manager
+After=network.target
+
+[Service]
+User=qa
+WorkingDirectory=/opt/qa-manager
+# use the path printed by `which uv`
+ExecStart=/home/qa/.local/bin/uv run server.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now qa-manager caddy
+```
+
+Over HTTPS the sign-in cookie is marked `Secure` automatically. Open only ports
+80 and 443 in the firewall, never 8765.
+
+**Before hosting:** create the admin account first, keep `allowed_domains` to
+your company domain, and back up the `data/` folder (it holds the database and
+is not in git). Never use `--dev-user` on a hosted server; the tool refuses to
+start if you combine it with `--host`.
