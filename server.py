@@ -6,9 +6,10 @@ automation tests that cover it -- in any connected project
 (Playwright JS/TS, Playwright Python, pytest, Selenium Java/Maven) -- triggers
 those tests, and writes the run's pass/fail back onto every linked case.
 
-    uv run python tools/test_case_manager/server.py            # http://localhost:8765
-    uv run python tools/test_case_manager/server.py --port 9000
-    uv run python tools/test_case_manager/server.py --import-junit results.xml [--project 2]
+    uv run server.py            # http://localhost:8765
+    uv run server.py --port 9000
+    uv run server.py --host 0.0.0.0    # hosting: see README "Hosting for a team"
+    uv run server.py --import-junit results.xml [--project 2]
 
 --import-junit records a run made outside the tool (CI, run_tests.py with
 --junitxml, a Playwright/Maven run) and updates the linked cases the same way,
